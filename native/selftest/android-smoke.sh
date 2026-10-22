@@ -1,101 +1,121 @@
 #!/usr/bin/env bash
 # Runs inside the Android emulator job: installs the test APK (with selftest.js), answers the
 # self-test's "WAIT …" steps with adb (system file picker taps, Open with / Share intents, Back),
-# and collects screenshots + results in smoke/.
+# and collects screenshots + results in smoke/ (progress.txt shows where time went).
 set -u
 PKG=com.m3athrazaq.sayyarati
 APK=native/android/app/build/outputs/apk/debug/app-debug.apk
 XLSX=application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
 OUT=smoke
 mkdir -p "$OUT"
+T0=$(date +%s)
 
-res() { adb shell run-as "$PKG" cat files/selftest-result.txt 2>/dev/null | tr -d '\r'; }
-shot() { adb exec-out screencap -p > "$OUT/$1.png" 2>/dev/null || true; }
+log() { echo "[$(( $(date +%s) - T0 ))s] $*" | tee -a "$OUT/progress.txt"; }
+note() { log "$*"; echo "::notice::smoke: $*"; }
+A() { timeout "${TO:-30}" adb "$@"; }                     # every adb call has a time limit
+res() { TO=10 A shell run-as "$PKG" cat files/selftest-result.txt 2>/dev/null | tr -d '\r'; }
+shot() { TO=15 A exec-out screencap -p > "$OUT/$1.png" 2>/dev/null || true; }
 waitfor() {  # marker, seconds
-  for _ in $(seq 1 "$2"); do
-    if res | grep -qE "^($1|DONE|ERROR)"; then res | grep -qE "^$1" && return 0; echo "stopped before $1"; return 1; fi
+  local end=$(( $(date +%s) + $2 ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    local r; r=$(res)
+    if echo "$r" | grep -qE "^($1|DONE|ERROR)"; then
+      echo "$r" | grep -qE "^$1" && { log "reached: $1"; return 0; }
+      log "stopped before $1"; return 1
+    fi
     sleep 1
   done
-  echo "timed out waiting for $1"; return 1
+  log "timed out waiting for $1"; return 1
 }
-tap_text() {  # regex, seconds
+tap_text() {  # regex, tries
   for _ in $(seq 1 "$2"); do
-    adb shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
-    adb shell cat /sdcard/ui.xml > "$OUT/ui.xml" 2>/dev/null
+    TO=20 A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
+    TO=10 A shell cat /sdcard/ui.xml > "$OUT/ui.xml" 2>/dev/null
     XY=$(python3 native/selftest/find_node.py "$OUT/ui.xml" "$1")
-    if [ -n "$XY" ]; then echo "tap '$1' at $XY"; adb shell input tap $XY; return 0; fi
+    if [ -n "$XY" ]; then log "tap '$1' at $XY"; TO=10 A shell input tap $XY; return 0; fi
     sleep 1
   done
-  echo "not found on screen: $1"; return 1
+  log "not found on screen: $1"; return 1
 }
+top_activity() { TO=15 A shell dumpsys activity activities 2>/dev/null | grep -m1 -E "topResumedActivity|mResumedActivity" | tr -d '\r'; }
 
-adb shell settings put global window_animation_scale 0
-adb shell settings put global transition_animation_scale 0
-adb shell settings put global animator_duration_scale 0
-adb install -r "$APK"
-adb shell getprop ro.build.version.release | sed 's/^/Android /' | tee "$OUT/device.txt"
-adb shell dumpsys package com.google.android.webview | grep -m1 versionName | sed 's/^ */WebView /' | tee -a "$OUT/device.txt"
-adb shell dumpsys package "$PKG" | sed -n '/requested permissions:/,/install permissions:/p' > "$OUT/permissions.txt"
+note "emulator ready"
+TO=10 A shell settings put global window_animation_scale 0
+TO=10 A shell settings put global transition_animation_scale 0
+TO=10 A shell settings put global animator_duration_scale 0
+TO=180 A install -r "$APK" | tail -1 | tee -a "$OUT/progress.txt"
+TO=10 A shell getprop ro.build.version.release | sed 's/^/Android /' | tee "$OUT/device.txt"
+TO=20 A shell dumpsys package com.google.android.webview | grep -m1 versionName | sed 's/^ */WebView /' | tee -a "$OUT/device.txt"
+TO=20 A shell dumpsys package "$PKG" | sed -n '/requested permissions:/,/install permissions:/p' > "$OUT/permissions.txt"
 
 # the file the user picks in the system picker
-adb push native/selftest/fixture-f150-layout.xlsx /sdcard/Download/sayyarati-test.xlsx
-adb shell content call --method scan_volume --uri content://media --arg external_primary >/dev/null 2>&1 || true
-adb shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download/sayyarati-test.xlsx >/dev/null 2>&1 || true
+TO=30 A push native/selftest/fixture-f150-layout.xlsx /sdcard/Download/sayyarati-test.xlsx >/dev/null
+TO=60 A shell content call --method scan_volume --uri content://media --arg external_primary >/dev/null 2>&1 || true
+TO=20 A shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Download/sayyarati-test.xlsx >/dev/null 2>&1 || true
 
-adb logcat -c
-adb shell am start -W -n "$PKG/.MainActivity"
+TO=10 A logcat -c
+TO=60 A shell am start -W -n "$PKG/.MainActivity" | tr -d '\r' >> "$OUT/progress.txt"
 sleep 6; shot 00-launch
+log "top: $(top_activity)"
 
-if waitfor "WAIT picker" 120; then
+if waitfor "WAIT picker" 90; then
   sleep 5; shot 01-picker
-  if ! tap_text "sayyarati-test" 8; then
-    tap_text "Show roots" 6 || true
+  log "top: $(top_activity)"
+  if ! tap_text "sayyarati-test" 6; then
+    tap_text "Show roots" 4 || true
     sleep 2; shot 01b-roots
-    tap_text "^Downloads$" 8 || true
+    tap_text "^Downloads$" 5 || true
     sleep 3; shot 01c-downloads
-    tap_text "sayyarati-test" 12 || true
+    if ! tap_text "sayyarati-test" 8; then
+      log "file not found in the picker: closing it"
+      TO=10 A shell input keyevent KEYCODE_BACK; sleep 1; TO=10 A shell input keyevent KEYCODE_BACK
+    fi
   fi
+else
+  note "the app did not start the test (no WAIT picker) — top: $(top_activity)"
 fi
-waitfor "STEP picker-summary" 150 && shot 02-picker-summary
+waitfor "STEP picker-summary" 150 && shot 02-picker-summary && note "picker import OK"
 
 if waitfor "WAIT view-intent" 60; then
-  adb shell am start -a android.intent.action.VIEW -t "$XLSX" \
-    -d "content://$PKG.fileprovider/exports/test-open.xlsx" -n "$PKG/.MainActivity"
+  TO=60 A shell am start -a android.intent.action.VIEW -t "$XLSX" \
+    -d "content://$PKG.fileprovider/exports/test-open.xlsx" -n "$PKG/.MainActivity" | tr -d '\r' >> "$OUT/progress.txt"
 fi
-waitfor "STEP view-summary" 90 && shot 03-open-with
+waitfor "STEP view-summary" 90 && shot 03-open-with && note "open-with OK"
 
 if waitfor "WAIT share-sheet" 60; then
   sleep 5; shot 04-share-sheet
-  adb shell input keyevent KEYCODE_BACK
+  log "top: $(top_activity)"
+  TO=10 A shell input keyevent KEYCODE_BACK
 fi
 waitfor "STEP after-share" 90 && shot 05-after-share
 
 if waitfor "WAIT send-intent" 60; then
-  adb shell am start -a android.intent.action.SEND -t "$XLSX" \
-    --eu android.intent.extra.STREAM "content://$PKG.fileprovider/exports/test-backup.xlsx" -n "$PKG/.MainActivity"
+  TO=60 A shell am start -a android.intent.action.SEND -t "$XLSX" \
+    --eu android.intent.extra.STREAM "content://$PKG.fileprovider/exports/test-backup.xlsx" -n "$PKG/.MainActivity" | tr -d '\r' >> "$OUT/progress.txt"
 fi
-waitfor "STEP restore" 90 && shot 06-restore
-waitfor "STEP home" 90 && shot 07-home
-waitfor "DONE" 90
+waitfor "STEP restore" 90 && shot 06-restore && note "share/restore OK"
+waitfor "STEP home" 60 && shot 07-home
+waitfor "DONE" 60
 sleep 2
 res | tee "$OUT/selftest-result.txt"
-adb exec-out run-as "$PKG" cat files/sayyarati-state.json > "$OUT/state.json" 2>/dev/null
-adb logcat -d > "$OUT/logcat-full.txt" 2>/dev/null || true
+TO=20 A exec-out run-as "$PKG" cat files/sayyarati-state.json > "$OUT/state.json" 2>/dev/null
+TO=30 A logcat -d > "$OUT/logcat-full.txt" 2>/dev/null || true
+note "self-test finished: $(grep -c '^PASS' "$OUT/selftest-result.txt") passed, $(grep -cE '^(FAIL|ERROR)' "$OUT/selftest-result.txt") failed"
 
 # data must survive a full restart of the app
-adb shell am force-stop "$PKG"
-adb shell am start -W -n "$PKG/.MainActivity"
+TO=20 A shell am force-stop "$PKG"
+TO=60 A shell am start -W -n "$PKG/.MainActivity" >/dev/null
 sleep 16; shot 08-relaunch
-adb shell run-as "$PKG" cat files/selftest-relaunch.txt 2>/dev/null | tr -d '\r' | tee "$OUT/relaunch-1.txt"
+TO=10 A shell run-as "$PKG" cat files/selftest-relaunch.txt 2>/dev/null | tr -d '\r' | tee "$OUT/relaunch-1.txt"
 
 # an Excel file opened with the app while it is closed (cold start from Drive / Files / WhatsApp)
-adb shell am force-stop "$PKG"
-adb shell run-as "$PKG" rm -f files/selftest-relaunch.txt
-adb shell am start -W -a android.intent.action.VIEW -t "$XLSX" \
-  -d "content://$PKG.fileprovider/exports/test-cold.xlsx" -n "$PKG/.MainActivity"
+TO=20 A shell am force-stop "$PKG"
+TO=10 A shell run-as "$PKG" rm -f files/selftest-relaunch.txt
+TO=60 A shell am start -W -a android.intent.action.VIEW -t "$XLSX" \
+  -d "content://$PKG.fileprovider/exports/test-cold.xlsx" -n "$PKG/.MainActivity" >/dev/null
 sleep 16; shot 09-cold-open
-adb shell run-as "$PKG" cat files/selftest-relaunch.txt 2>/dev/null | tr -d '\r' | tee "$OUT/relaunch-2.txt"
-adb logcat -d >> "$OUT/logcat-full.txt" 2>/dev/null || true
+TO=10 A shell run-as "$PKG" cat files/selftest-relaunch.txt 2>/dev/null | tr -d '\r' | tee "$OUT/relaunch-2.txt"
+TO=30 A logcat -d >> "$OUT/logcat-full.txt" 2>/dev/null || true
 
 python3 - <<'PY' 2>&1 | tee -a "$OUT/selftest-result.txt"
 import json, re
@@ -119,9 +139,9 @@ check(not csp, "no security-policy (CSP) violations by the app itself" + ("" if 
 crash = [l for l in log if "FATAL EXCEPTION" in l or ("AndroidRuntime" in l and " E " in l)]
 check(not crash, "no crash in the log" + ("" if not crash else ": " + crash[0][-160:]))
 PY
-grep -E "Capacitor|chromium|AndroidRuntime|XlsxImport" "$OUT/logcat-full.txt" | tail -400 > "$OUT/logcat.txt" || true
+grep -E "Capacitor|chromium|AndroidRuntime|XlsxImport|ActivityTaskManager" "$OUT/logcat-full.txt" | tail -600 > "$OUT/logcat.txt" || true
 rm -f "$OUT/logcat-full.txt" "$OUT/ui.xml"
-grep -c "^PASS" "$OUT/selftest-result.txt" | sed 's/^/passed: /'
+note "all done in $(( $(date +%s) - T0 ))s"
 if grep -qE "^(FAIL|ERROR)" "$OUT/selftest-result.txt" || ! grep -q "^DONE" "$OUT/selftest-result.txt"; then
   echo "SMOKE TEST FAILED"; exit 1
 fi

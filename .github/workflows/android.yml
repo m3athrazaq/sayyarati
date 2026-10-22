@@ -98,8 +98,10 @@ jobs:
           sudo udevadm trigger --name-match=kvm
 
       - name: Run in the emulator (Android 15)
+        timeout-minutes: 32
         uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
         with:
+          emulator-boot-timeout: 900
           api-level: 35
           arch: x86_64
           target: google_apis
