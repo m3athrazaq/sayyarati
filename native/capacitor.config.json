@@ -4,6 +4,13 @@
   "webDir": "www",
   "backgroundColor": "#12262E",
   "plugins": {
-    "SystemBars": { "insetsHandling": "native", "initialViewportFitValueHint": "cover" }
+    "SystemBars": {
+      "insetsHandling": "native",
+      "initialViewportFitValueHint": "cover"
+    }
+  },
+  "android": {
+    "webContentsDebuggingEnabled": false,
+    "allowMixedContent": false
   }
 }

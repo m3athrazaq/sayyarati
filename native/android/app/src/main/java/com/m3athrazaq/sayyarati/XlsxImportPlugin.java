@@ -1,0 +1,207 @@
+package com.m3athrazaq.sayyarati;
+
+import android.app.Activity;
+import android.content.ContentResolver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.res.AssetFileDescriptor;
+import android.database.Cursor;
+import android.net.Uri;
+import android.provider.DocumentsContract;
+import android.provider.OpenableColumns;
+import android.util.Base64;
+import androidx.activity.result.ActivityResult;
+import androidx.core.content.IntentCompat;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
+import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+
+/**
+ * Brings an Excel file into the app.
+ *
+ * The WebView's own file input reads the chosen file lazily, which fails for Google Drive files that
+ * are not downloaded yet. Here the file is read completely through the ContentResolver instead (Drive
+ * downloads it while we read), and a Google Sheets document is exported by Drive as .xlsx.
+ *
+ * - pick(): opens the system file picker (Drive, Downloads, Files...).
+ * - takeOpenedFile(): the file the app was opened with ("Open with" / "Share" from another app).
+ *
+ * Only content:// files the user chose are read, at most MAX_BYTES, and nothing is written anywhere:
+ * the bytes go to the page, which validates them before anything is imported.
+ */
+@CapacitorPlugin(name = "XlsxImport")
+public class XlsxImportPlugin extends Plugin {
+
+    static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    static final int MAX_BYTES = 20 * 1024 * 1024;
+
+    /** file handed to the app by another app, waiting for the page to take it */
+    private Uri pendingUri;
+
+    @Override
+    protected void handleOnNewIntent(Intent intent) {
+        super.handleOnNewIntent(intent);
+        Uri uri = incomingUri(intent);
+        if (uri != null) {
+            pendingUri = uri;
+            notifyListeners("fileOpened", new JSObject(), true);
+        }
+    }
+
+    /** VIEW (Open with) or SEND (Share) of a content:// file; anything else is ignored */
+    static Uri incomingUri(Intent intent) {
+        if (intent == null) return null;
+        String action = intent.getAction();
+        Uri uri = null;
+        if (Intent.ACTION_VIEW.equals(action)) {
+            uri = intent.getData();
+        } else if (Intent.ACTION_SEND.equals(action)) {
+            uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri.class);
+            if (uri == null && intent.getClipData() != null && intent.getClipData().getItemCount() > 0) {
+                uri = intent.getClipData().getItemAt(0).getUri();
+            }
+        }
+        if (uri == null || !ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) return null;
+        return uri;
+    }
+
+    @PluginMethod
+    public void takeOpenedFile(PluginCall call) {
+        Uri uri = pendingUri;
+        pendingUri = null;
+        if (uri == null) {
+            JSObject r = new JSObject();
+            r.put("none", true);
+            call.resolve(r);
+            return;
+        }
+        // the same launch intent must not be imported again if the activity is recreated
+        Activity activity = getActivity();
+        if (activity != null) activity.runOnUiThread(() -> activity.setIntent(new Intent(Intent.ACTION_MAIN)));
+        readInBackground(call, uri, false);
+    }
+
+    @PluginMethod
+    public void pick(PluginCall call) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        // No CATEGORY_OPENABLE, so Google Sheets documents in Drive are offered too (read below as .xlsx).
+        intent.setType("*/*");
+        intent.putExtra(
+            Intent.EXTRA_MIME_TYPES,
+            // some apps label .xlsx files loosely; the page checks the content before importing
+            new String[] { XLSX, "application/vnd.google-apps.spreadsheet", "application/vnd.ms-excel", "application/octet-stream" }
+        );
+        startActivityForResult(call, intent, "picked");
+    }
+
+    @ActivityCallback
+    private void picked(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        Intent data = result.getData();
+        if (result.getResultCode() != Activity.RESULT_OK || data == null || data.getData() == null) {
+            JSObject r = new JSObject();
+            r.put("cancelled", true);
+            call.resolve(r);
+            getBridge().releaseCall(call);
+            return;
+        }
+        readInBackground(call, data.getData(), true);
+    }
+
+    private void readInBackground(PluginCall call, Uri uri, boolean saved) {
+        getBridge().execute(() -> {
+            try {
+                Context ctx = getContext();
+                ContentResolver cr = ctx.getContentResolver();
+                byte[] bytes = readBytes(ctx, cr, uri);
+                JSObject r = new JSObject();
+                r.put("name", displayName(cr, uri));
+                r.put("size", bytes.length);
+                r.put("data", Base64.encodeToString(bytes, Base64.NO_WRAP));
+                call.resolve(r);
+            } catch (TooLargeException e) {
+                call.reject("The file is larger than " + (MAX_BYTES / 1024 / 1024) + " MB", "TOO_LARGE");
+            } catch (NoXlsxException e) {
+                call.reject("This Google Sheets file cannot be exported as .xlsx here", "NO_XLSX");
+            } catch (SecurityException e) {
+                call.reject("No permission to read the file", "NO_PERMISSION");
+            } catch (Exception e) {
+                call.reject(e.getClass().getSimpleName() + ": " + e.getMessage(), "READ_FAILED");
+            } finally {
+                if (saved) getBridge().releaseCall(call);
+            }
+        });
+    }
+
+    private static byte[] readBytes(Context ctx, ContentResolver cr, Uri uri) throws IOException {
+        InputStream in = null;
+        AssetFileDescriptor afd = null;
+        try {
+            if (isVirtual(ctx, cr, uri)) {
+                // e.g. a Google Sheets document: ask the provider for an .xlsx copy
+                String[] types = cr.getStreamTypes(uri, XLSX);
+                if (types == null || types.length == 0) throw new NoXlsxException();
+                afd = cr.openTypedAssetFileDescriptor(uri, XLSX, null);
+                if (afd == null) throw new NoXlsxException();
+                in = afd.createInputStream();
+            } else {
+                in = cr.openInputStream(uri);
+            }
+            if (in == null) throw new IOException("no data");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[64 * 1024];
+            long total = 0;
+            int n;
+            while ((n = in.read(buf)) != -1) {
+                total += n;
+                if (total > MAX_BYTES) throw new TooLargeException();
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (IOException ignored) {}
+            }
+            if (afd != null) {
+                try {
+                    afd.close();
+                } catch (IOException ignored) {}
+            }
+        }
+    }
+
+    private static boolean isVirtual(Context ctx, ContentResolver cr, Uri uri) {
+        if (!DocumentsContract.isDocumentUri(ctx, uri)) return false;
+        try (Cursor c = cr.query(uri, new String[] { DocumentsContract.Document.COLUMN_FLAGS }, null, null, null)) {
+            if (c != null && c.moveToFirst() && !c.isNull(0)) {
+                return (c.getInt(0) & DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT) != 0;
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    private static String displayName(ContentResolver cr, Uri uri) {
+        String name = null;
+        try (Cursor c = cr.query(uri, new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (i >= 0) name = c.getString(i);
+            }
+        } catch (Exception ignored) {}
+        if (name == null) name = uri.getLastPathSegment();
+        if (name == null || name.isEmpty()) name = "file.xlsx";
+        return name.length() > 120 ? name.substring(0, 120) : name;
+    }
+
+    static class TooLargeException extends IOException {}
+
+    static class NoXlsxException extends IOException {}
+}

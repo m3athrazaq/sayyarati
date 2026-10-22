@@ -1,5 +1,6 @@
 # Builds the Android app from the same web files and publishes it in Releases.
 # Stable link: https://github.com/<owner>/<repo>/releases/latest/download/sayyarati.apk
+# Signing: native/signing/sayyarati-release.p12.enc, unlocked with the SIGNING_PASSPHRASE secret.
 name: Android app (APK)
 
 on:
@@ -8,38 +9,47 @@ on:
     branches: [main]
     paths:
       - 'index.html'
+      - 'app.js'
       - 'manifest.webmanifest'
       - '*.png'
       - 'vendor/**'
       - 'fonts/**'
       - 'native/**'
+      - '!native/selftest/**'
       - '.github/workflows/android.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: android-build
   cancel-in-progress: true
 
 env:
-  APP_VERSION: '1.0.0'
+  APP_VERSION: '1.1.0'
   BUILD_NUMBER: ${{ github.run_number }}
+  CERT_SHA256: '55:B6:16:EB:D2:A3:19:71:A9:36:6B:3C:AC:FD:CA:1F:B6:2D:B7:8E:64:83:0E:93:C4:F6:95:65:76:53:7F:1B'
 
 jobs:
   android:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    permissions:
+      contents: write   # to publish the release
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: native/package-lock.json
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: 21
@@ -47,23 +57,42 @@ jobs:
       - name: Copy the app files into the phone project
         run: |
           rm -rf native/www && mkdir -p native/www
-          cp -R index.html manifest.webmanifest *.png vendor fonts native/www/
+          cp -R index.html app.js manifest.webmanifest *.png vendor fonts native/www/
 
-      - name: Install Capacitor and sync the Android project
+      - name: Install Capacitor (no install scripts) and sync the Android project
         working-directory: native
         run: |
-          npm ci
+          npm ci --ignore-scripts --no-audit --no-fund
           npx cap sync android
+
+      - name: Unlock the signing key
+        env:
+          SIGNING_PASSPHRASE: ${{ secrets.SIGNING_PASSPHRASE }}
+        run: |
+          if [ -z "$SIGNING_PASSPHRASE" ]; then
+            echo "::error::Add the SIGNING_PASSPHRASE secret (Settings > Secrets and variables > Actions) to sign the app."
+            exit 1
+          fi
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 \
+            -in native/signing/sayyarati-release.p12.enc -out "$RUNNER_TEMP/release.p12" -pass env:SIGNING_PASSPHRASE
+          chmod 600 "$RUNNER_TEMP/release.p12"
 
       - name: Build the signed APK
         working-directory: native/android
+        env:
+          MR_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_PASSPHRASE }}
         run: |
           export VERSION_CODE=$((BUILD_NUMBER + 100))
-          export MR_KEYSTORE="$GITHUB_WORKSPACE/native/signing/sayyarati-release.p12"
-          export MR_KEYSTORE_PASSWORD="$(sed -n 's/^storePassword=//p' ../signing/keystore.properties)"
-          export MR_KEY_ALIAS="$(sed -n 's/^keyAlias=//p' ../signing/keystore.properties)"
+          export MR_KEYSTORE="$RUNNER_TEMP/release.p12"
+          export MR_KEY_ALIAS=sayyarati
           chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease
+          if ! ./gradlew --no-daemon assembleRelease > "$RUNNER_TEMP/build.log" 2>&1; then
+            grep -E "error:|warning: \[|e: |What went wrong|FAILURE|\.java:[0-9]+" "$RUNNER_TEMP/build.log" | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            tail -80 "$RUNNER_TEMP/build.log"
+            rm -f "$RUNNER_TEMP/release.p12"
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/release.p12"
           ls -la app/build/outputs/apk/release/
 
       - name: Check the APK
@@ -71,14 +100,18 @@ jobs:
           APK=native/android/app/build/outputs/apk/release/app-release.apk
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           "$BT/apksigner" verify --verbose --print-certs "$APK" | tee verify.txt
-          grep -qi "93:36:14:4F:8E:72:DC:56:C3:D2:61:15:18:BE:65:39:99:C7:ED:C2:15:E6:38:00:BE:76:6F:4F:34:7C:B3:AA\|9336144f8e72dc56c3d2611518be653999c7edc215e63800be766f4f347cb3aa" verify.txt
+          WANT=$(echo "$CERT_SHA256" | tr -d ':' | tr 'A-F' 'a-f')
+          grep -qi "SHA-256 digest: $WANT" verify.txt || { echo "::error::APK is not signed with the app's key"; exit 1; }
           "$BT/aapt2" dump badging "$APK" | grep -E "^package:|^sdkVersion|^targetSdkVersion|^application-label" | cut -c1-300
-          mkdir -p out && cp "$APK" out/sayyarati.apk && ls -la out/
+          "$BT/aapt2" dump permissions "$APK" | tee perms.txt
+          if grep -q "android.permission.INTERNET" perms.txt; then echo "::error::The app must not have internet access"; exit 1; fi
+          mkdir -p out && cp "$APK" out/sayyarati.apk && sha256sum out/sayyarati.apk | tee out/sha256.txt
 
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
         run: |
           TAG="v$APP_VERSION-$BUILD_NUMBER"
           BASE="https://github.com/$REPO/releases/latest/download"
@@ -87,9 +120,10 @@ jobs:
             "سيّارتي — النسخة $APP_VERSION (بناء $BUILD_NUMBER)" "" \
             "- **أندرويد:** [sayyarati.apk]($BASE/sayyarati.apk) — افتح الرابط على الهاتف، ثم ثبّت الملف واسمح بالتثبيت من المتصفح عند السؤال." \
             "- **آيفون (ويب):** https://$OWNER.github.io/$NAME/ — افتحه في Safari ثم «مشاركة ← إضافة إلى الشاشة الرئيسية»." \
+            "" "SHA-256 للملف: \`$(cut -d' ' -f1 out/sha256.txt)\`" \
             "" "الرابط أعلاه ثابت ويشير دائمًا إلى آخر نسخة، والتحديث يُثبَّت فوق القديم مع بقاء البيانات." > notes.md
           set +e
-          gh release create "$TAG" out/sayyarati.apk --repo "$REPO" --target "${{ github.sha }}" \
+          gh release create "$TAG" out/sayyarati.apk --repo "$REPO" --target "$SHA" \
             --title "سيّارتي $APP_VERSION ($BUILD_NUMBER)" --notes-file notes.md --latest > release.log 2>&1
           rc=$?; cat release.log
           if [ $rc -ne 0 ]; then echo "::error::$(tr '\n' ' ' < release.log)"; exit 1; fi
