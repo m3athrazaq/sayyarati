@@ -7,8 +7,10 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        // the app's own plugin (reads the Excel file the user picks or opens with the app)
+        // the app's own plugins: reading the Excel file the user picks or opens with the app,
+        // and keeping the WebView on the app's own pages
         registerPlugin(XlsxImportPlugin.class);
+        registerPlugin(NavigationGuardPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

@@ -1,0 +1,53 @@
+# Web app checks on every change: the files are stamped consistently (tools/stamp.py), and the
+# browser test (tests/web.test.js) passes — normal import/export/restore and crafted or broken files.
+name: Web app (checks)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'app.js'
+      - 'sw.js'
+      - 'vendor/**'
+      - 'tools/**'
+      - 'tests/**'
+      - 'native/selftest/fixture-f150-layout.xlsx'
+      - '.github/workflows/web.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+
+      - name: Files stamped and valid
+        run: |
+          python3 tools/stamp.py --check
+          node --check app.js
+          node --check sw.js
+          echo "7e49da68588e250dbb8bba190d2caa8ab3787cc0284bda1d8b2f805c4df742c9  vendor/exceljs.min.js" | sha256sum -c -
+
+      - name: Browser test
+        run: |
+          mkdir -p "$RUNNER_TEMP/pw" && cd "$RUNNER_TEMP/pw"
+          npm init -y > /dev/null
+          npm install --ignore-scripts --no-audit --no-fund playwright@1.56.0
+          npx playwright install --with-deps chromium
+          cd "$GITHUB_WORKSPACE"
+          python3 -m http.server 8765 > /dev/null 2>&1 &
+          sleep 1
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" node tests/web.test.js | tee web-test.txt
+          ! grep -E "^(FAIL|ERROR)" web-test.txt
+          grep -q "^PASS no JS errors" web-test.txt

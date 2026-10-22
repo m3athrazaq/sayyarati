@@ -121,7 +121,8 @@ main{max-width:720px;margin:0 auto;padding:0 16px}
 .stat b{font-size:17px;font-weight:500;white-space:nowrap}
 .stat em{font-style:normal;font-size:12px;color:var(--muted);margin-inline-start:3px}
 
-.kv{display:grid;grid-template-columns:auto 1fr;gap:9px 16px;margin:0}
+.kv{display:grid;grid-template-columns:fit-content(48%) minmax(0,1fr);gap:9px 16px;margin:0}
+.kv dt,.kv dd,.entry-title,.entry-meta span,.list-item .grow,.sec-head h1,.sec-head p,.due-txt,.car-sub,.field > span{overflow-wrap:anywhere;min-width:0}
 .kv dt{color:var(--muted);font-size:14.5px}
 .kv dd{margin:0;text-align:end;font-weight:500}
 
@@ -293,6 +294,6 @@ input[type="date"]{direction:ltr;text-align:right}
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="fileIn" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden">
 
-<script src="app.js?v=1.1.0"></script>
+<script src="app.js?v=8f57006fcc59" integrity="sha384-2FMWWqZvxufQaZGIxbxuDZ++IaEmUtAGpxcQkAxfodv3ahN9yJShIqR5+Sf5YQRm"></script>
 </body>
 </html>

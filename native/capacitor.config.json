@@ -12,5 +12,10 @@
   "android": {
     "webContentsDebuggingEnabled": false,
     "allowMixedContent": false
+  },
+  "cordova": {
+    "preferences": {
+      "DisableDeploy": "true"
+    }
   }
 }

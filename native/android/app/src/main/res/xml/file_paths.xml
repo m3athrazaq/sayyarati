@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Files the app can hand to another app with a temporary read grant: only its own cache
-     (the exported Excel backup, shared with Drive, WhatsApp...). -->
+<!-- Files the app can hand to another app with a temporary read grant: only the exported Excel
+     backups in its cache (shared with Drive, WhatsApp...). -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <cache-path name="cache" path="." />
+    <cache-path name="exports" path="exports/" />
 </paths>

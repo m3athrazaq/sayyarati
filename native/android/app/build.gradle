@@ -6,6 +6,12 @@ if (versionCodeEnv && !(versionCodeEnv ==~ /[1-9][0-9]{0,8}/)) {
     throw new GradleException("VERSION_CODE must be a positive integer, got '${versionCodeEnv}'")
 }
 def appVersionCode = versionCodeEnv ? versionCodeEnv.toInteger() : 1
+// versionName comes from the CI too (APP_VERSION); local builds say "dev".
+def versionNameEnv = System.getenv("APP_VERSION")?.trim()
+if (versionNameEnv && !(versionNameEnv ==~ /[0-9]+(\.[0-9]+){0,3}/)) {
+    throw new GradleException("APP_VERSION must look like 1.2.3, got '${versionNameEnv}'")
+}
+def appVersionName = versionNameEnv ?: "dev"
 
 // Release signing, only when MR_KEYSTORE (absolute path to a PKCS12 or JKS keystore) is set.
 // Without it, assembleRelease still works and produces app-release-unsigned.apk.
@@ -19,7 +25,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode appVersionCode
-        versionName "1.0.0"
+        versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -68,12 +74,3 @@ dependencies {
 }
 
 apply from: 'capacitor.build.gradle'
-
-try {
-    def servicesJSON = file('google-services.json')
-    if (servicesJSON.text) {
-        apply plugin: 'com.google.gms.google-services'
-    }
-} catch(Exception e) {
-    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
-}

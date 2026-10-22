@@ -38,11 +38,15 @@
     let blocked = false;
     try { await fetch('https://example.com/selftest', { mode: 'no-cors', cache: 'no-store' }); } catch (e) { blocked = true; }
     ok(blocked, 'requests to the internet are blocked');
+    const a = document.createElement('a'); a.href = 'https://example.com/selftest-nav'; document.body.appendChild(a); a.click(); a.remove();
+    await wait(2500);
+    ok(location.hostname === 'localhost' && document.visibilityState === 'visible', 'links to other sites are blocked (the app stays on its own pages)');
     ok(!!$('#wImport'), 'welcome screen shown');
 
     /* files the shell script will hand to the app with intents */
     const fixture = await (await fetch('fixture-f150-layout.xlsx')).arrayBuffer();
-    for (const n of ['open', 'cold']) await FS.writeFile({ path: 'incoming/' + n + '.xlsx', data: b64(fixture), directory: 'CACHE', recursive: true });
+    /* (debug builds accept the app's own FileProvider addresses; release builds refuse them) */
+    for (const n of ['test-open', 'test-cold']) await FS.writeFile({ path: 'exports/' + n + '.xlsx', data: b64(fixture), directory: 'CACHE', recursive: true });
 
     /* 1. the system file picker (what the user taps: Import → Drive/Downloads → file) */
     await mark('WAIT picker');
@@ -77,7 +81,7 @@
     let exported = null;
     await until(async () => {
       const r = await FS.readdir({ path: 'exports', directory: 'CACHE' });
-      const f = (r.files || []).map(x => (typeof x === 'string' ? x : x.name)).filter(n => /\.xlsx$/.test(n));
+      const f = (r.files || []).map(x => (typeof x === 'string' ? x : x.name)).filter(n => /^سيارتي-.*\.xlsx$/.test(n));
       if (f.length) exported = f[f.length - 1];
       return !!exported;
     }, 60);
@@ -86,7 +90,7 @@
     let backup = '';
     if (exported) backup = (await FS.readFile({ path: 'exports/' + exported, directory: 'CACHE' })).data || '';
     ok(backup.startsWith('UEsDB'), 'backup is an .xlsx file (' + Math.round(backup.length * 0.75 / 1024) + ' KB)');
-    if (backup) await FS.writeFile({ path: 'incoming/backup.xlsx', data: backup, directory: 'CACHE', recursive: true });
+    if (backup) await FS.writeFile({ path: 'exports/test-backup.xlsx', data: backup, directory: 'CACHE', recursive: true });
     if ($('#sheet.on')) $('#sheetClose').click();
     await wait(800);
 

@@ -60,7 +60,7 @@ waitfor "STEP picker-summary" 150 && shot 02-picker-summary
 
 if waitfor "WAIT view-intent" 60; then
   adb shell am start -a android.intent.action.VIEW -t "$XLSX" \
-    -d "content://$PKG.fileprovider/cache/incoming/open.xlsx" -n "$PKG/.MainActivity"
+    -d "content://$PKG.fileprovider/exports/test-open.xlsx" -n "$PKG/.MainActivity"
 fi
 waitfor "STEP view-summary" 90 && shot 03-open-with
 
@@ -72,7 +72,7 @@ waitfor "STEP after-share" 90 && shot 05-after-share
 
 if waitfor "WAIT send-intent" 60; then
   adb shell am start -a android.intent.action.SEND -t "$XLSX" \
-    --eu android.intent.extra.STREAM "content://$PKG.fileprovider/cache/incoming/backup.xlsx" -n "$PKG/.MainActivity"
+    --eu android.intent.extra.STREAM "content://$PKG.fileprovider/exports/test-backup.xlsx" -n "$PKG/.MainActivity"
 fi
 waitfor "STEP restore" 90 && shot 06-restore
 waitfor "STEP home" 90 && shot 07-home
@@ -92,7 +92,7 @@ adb shell run-as "$PKG" cat files/selftest-relaunch.txt 2>/dev/null | tr -d '\r'
 adb shell am force-stop "$PKG"
 adb shell run-as "$PKG" rm -f files/selftest-relaunch.txt
 adb shell am start -W -a android.intent.action.VIEW -t "$XLSX" \
-  -d "content://$PKG.fileprovider/cache/incoming/cold.xlsx" -n "$PKG/.MainActivity"
+  -d "content://$PKG.fileprovider/exports/test-cold.xlsx" -n "$PKG/.MainActivity"
 sleep 16; shot 09-cold-open
 adb shell run-as "$PKG" cat files/selftest-relaunch.txt 2>/dev/null | tr -d '\r' | tee "$OUT/relaunch-2.txt"
 adb logcat -d >> "$OUT/logcat-full.txt" 2>/dev/null || true

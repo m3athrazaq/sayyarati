@@ -6,11 +6,13 @@
    - كل نص يُدرج في HTML يمر عبر esc()، وكل معرّف/لون/نوع يأتي من ملف يُتحقق منه في sanitize*().
    - لا eval ولا سكربتات خارجية؛ سياسة CSP في index.html تمنع أي سكربت غير ملفات التطبيق نفسه.
    ====================================================================== */
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 const KEY = 'sayyarati.state.v1';
 const NATIVE_FILE = 'sayyarati-state.json';
 const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+/* integrity of vendor/exceljs.min.js — written by tools/stamp.py, checked by the browser before it runs */
+const EXCELJS_SRI = 'sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz';
 
 /* refuse to run inside a frame (another site embedding the app) */
 if (window.top !== window.self) {
@@ -98,13 +100,17 @@ function newCar(name, fromCar) {
    A backup file is untrusted input: every id, colour, type and value is
    checked here, so nothing in it can inject HTML or break the app.
    ====================================================================== */
-const LIMITS = { cars: 50, cardFields: 60, sections: 40, columns: 40, rows: 20000, text: 2000, label: 80 };
+const LIMITS = { cars: 50, cardFields: 60, sections: 40, columns: 40, rows: 5000, totalRows: 15000, text: 2000, label: 80, backupChars: 40e6 };
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 const isObj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
 const arr = v => (Array.isArray(v) ? v : []);
-const str = (v, max) => (v == null ? '' : typeof v === 'object' ? '' : String(v)).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, max);
+const str = (v, max) => {
+  let t = (v == null || typeof v === 'object' ? '' : String(v)).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, max);
+  if (/[\uD800-\uDBFF]$/.test(t)) t = t.slice(0, -1); /* never cut an emoji in half */
+  return t;
+};
 const finite = (v, d = 0) => (typeof v === 'number' && isFinite(v) ? v : d);
 function cleanId(v, used) {
   let id = typeof v === 'string' && ID_RE.test(v) && !(v in Object.prototype) ? v : uid();
@@ -182,9 +188,16 @@ function sanitizeSettings(x) {
   };
 }
 function sanitizeCars(list) { const used = new Set(); return arr(list).slice(0, LIMITS.cars).map(c => sanitizeCar(c, used)).filter(Boolean); }
+const countRows = cars => cars.reduce((a, c) => a + c.sections.reduce((b, s) => b + s.rows.length, 0), 0);
+/* last line of defence for stored data: never more rows than the app can handle */
+function capRows(cars) {
+  let left = LIMITS.totalRows;
+  for (const c of cars) for (const s of c.sections) { if (s.rows.length > left) s.rows = s.rows.slice(0, Math.max(0, left)); left -= s.rows.length; }
+  return cars;
+}
 function sanitizeState(x) {
   const s = isObj(x) ? x : {};
-  const cars = sanitizeCars(s.cars);
+  const cars = capRows(sanitizeCars(s.cars));
   return {
     v: 1, cars,
     activeCar: cars.some(c => c.id === s.activeCar) ? s.activeCar : (cars[0] ? cars[0].id : null),
@@ -204,7 +217,7 @@ async function loadNative() {
   const fs = plug('Filesystem'); if (!fs) return null;
   try { const r = await fs.readFile({ path: NATIVE_FILE, directory: 'DATA', encoding: 'utf8' }); return JSON.parse(r.data); } catch (e) { return null; }
 }
-let saveTimer = null, warnedSave = false;
+let saveTimer = null, lastWarn = 0, saveOk = true;
 function save() {
   S.rev = (S.rev || 0) + 1;
   const json = JSON.stringify(S);
@@ -214,11 +227,17 @@ function save() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       const fs = plug('Filesystem');
-      if (fs) fs.writeFile({ path: NATIVE_FILE, data: JSON.stringify(S), directory: 'DATA', encoding: 'utf8', recursive: true }).catch(e => { console.warn(e); saveFailed(); });
+      if (!fs) { setSaveOk(ok); return; }
+      fs.writeFile({ path: NATIVE_FILE, data: JSON.stringify(S), directory: 'DATA', encoding: 'utf8', recursive: true })
+        .then(() => setSaveOk(true)).catch(e => { console.warn(e); setSaveOk(false); });
     }, 150);
-  } else if (!ok) saveFailed();
+  } else setSaveOk(ok);
 }
-function saveFailed() { if (warnedSave) return; warnedSave = true; toast('تعذّر حفظ البيانات على الجهاز — صدّر نسخة احتياطية الآن'); }
+function setSaveOk(ok) {
+  const was = saveOk; saveOk = ok;
+  if (!ok && Date.now() - lastWarn > 60e3) { lastWarn = Date.now(); toast('تعذّر حفظ آخر تعديل على الجهاز — صدّر نسخة احتياطية الآن'); }
+  if (was !== ok && view === 'home' && S.cars.length) render();
+}
 const car = () => S.cars.find(c => c.id === S.activeCar) || S.cars[0];
 
 /* ---------- formatting ---------- */
@@ -290,7 +309,7 @@ function odoPoints(c) {
   return pts;
 }
 function currentOdo(c) { let m = 0; for (const p of odoPoints(c)) if (p.odo > m) m = p.odo; return m; }
-function firstOdo(c) { const p = odoPoints(c).map(x => x.odo); return p.length ? Math.min(...p) : 0; }
+function firstOdo(c) { let m = Infinity; for (const p of odoPoints(c)) if (p.odo < m) m = p.odo; return m === Infinity ? 0 : m; }
 /* average km/day from dated readings (ignores readings whose date goes backwards) */
 function kmPerDay(c) {
   const pts = odoPoints(c).filter(p => p.date).sort((a, b) => a.odo - b.odo);
@@ -343,10 +362,10 @@ function openSheet(title, html, onMount) {
 }
 function closeSheet() { $('#scrim').classList.remove('on'); $('#sheet').classList.remove('on'); }
 const sheetOpen = () => $('#sheet').classList.contains('on');
-function confirmBox(msg, okLabel, onOk, danger = true) {
+function confirmBox(msg, okLabel, onOk, danger = true, onCancel = null) {
   openSheet('تأكيد', `<p style="margin:4px 0 20px">${esc(msg)}</p>
     <div class="btn-row"><button class="btn ghost" id="cNo">إلغاء</button><button class="btn ${danger ? 'danger' : ''}" id="cYes">${esc(okLabel)}</button></div>`, b => {
-    b.querySelector('#cNo').onclick = closeSheet;
+    b.querySelector('#cNo').onclick = () => { closeSheet(); if (onCancel) onCancel(); };
     b.querySelector('#cYes').onclick = () => { closeSheet(); onOk(); };
   });
 }
@@ -374,8 +393,21 @@ function render() {
   const c = car();
   document.documentElement.style.setProperty('--car', COLOR_RE.test(c.color) ? c.color : CAR_COLORS[0]);
   $('#carPillName').textContent = c.name;
-  ({ home: renderHome, logs: renderLogs, stats: renderStats, settings: renderSettings })[view]();
+  try { ({ home: renderHome, logs: renderLogs, stats: renderStats, settings: renderSettings })[view](); }
+  catch (e) { console.error(e); renderRescue(e); }
   $('#v-' + view).classList.add('on');
+}
+/* shown instead of a screen that failed to draw: the way out is always available */
+function renderRescue(e) {
+  $('#v-' + view).innerHTML = `<div class="block lift" style="margin-top:16px">
+    <h2>تعذّر عرض هذه الصفحة</h2>
+    <p style="margin:0 0 14px;color:var(--muted);font-size:14px">يبدو أن بيانات «${esc(car().name)}» فيها شيء غير متوقع. احفظ نسخة احتياطية، أو انتقل إلى سيارة أخرى، أو احذف هذه السيارة.</p>
+    <p style="margin:0 0 14px;color:var(--muted);font-size:12px;direction:ltr;text-align:left">${esc(String((e && e.message) || e).slice(0, 160))}</p>
+    <div class="btn-row"><button class="btn amber" id="rsExp">نسخة احتياطية</button><button class="btn ghost" id="rsCars">السيارات</button></div>
+    <button class="btn danger wide" id="rsDel" style="margin-top:10px">حذف هذه السيارة</button></div>`;
+  $('#rsExp').onclick = openBackup;
+  $('#rsCars').onclick = openCarSwitcher;
+  $('#rsDel').onclick = () => { const c = car(); confirmBox(`حذف «${c.name}» وكل سجلاتها؟`, 'حذف السيارة', () => { S.cars = S.cars.filter(x => x.id !== c.id); S.activeCar = S.cars[0] ? S.cars[0].id : null; save(); go('home'); }); };
 }
 
 /* ---------- welcome ---------- */
@@ -458,6 +490,7 @@ function renderHome() {
     </div>
   </div>
   ${dueHTML ? `<div class="block lift due-list">${dueHTML}</div>` : ''}
+  ${!saveOk ? `<div class="backup-note" style="background:color-mix(in srgb,var(--bad) 18%,transparent)">آخر تعديل لم يُحفظ على الجهاز.<button id="hSaveFail">صدّر نسخة احتياطية</button></div>` : ''}
   ${backupWarn ? `<div class="backup-note">${daysSinceBackup == null ? 'لم تحفظ نسخة احتياطية بعد.' : `آخر نسخة احتياطية قبل ${daysSinceBackup} يوماً.`}<button id="hBackup">احفظ الآن</button></div>` : ''}
   <div class="block ${dueHTML ? '' : 'lift'}">
     <div class="stats">
@@ -479,6 +512,7 @@ function renderHome() {
   $('#hCard').onclick = () => openCardEditor();
   $('#hAll').onclick = () => go('logs');
   if ($('#hBackup')) $('#hBackup').onclick = openBackup;
+  if ($('#hSaveFail')) $('#hSaveFail').onclick = openBackup;
   $('#v-home').querySelectorAll('[data-sec][data-row]').forEach(b => b.onclick = () => openEntry(b.dataset.sec, b.dataset.row));
 }
 function recentItem(s, r) {
@@ -703,10 +737,9 @@ function openCardEditor(structure) {
       b.querySelector('#cfAdd').onclick = () => { sync(); if (work.length >= LIMITS.cardFields) return; work.push({ id: uid(), label: 'بند جديد', type: 'text', value: '' }); draw(b); };
       b.querySelector('#cfSave').onclick = () => {
         sync();
-        const apply = target => { const old = target.cardFields; target.cardFields = work.map(f => { const o = old.find(x => x.id === f.id); return { id: f.id, label: f.label, type: f.type, value: o ? cleanValue(f.type, o.value) : '' }; }); };
-        apply(c);
-        if (b.querySelector('#cfAll').checked) S.cars.forEach(x => { if (x !== c) apply(x); });
-        save(); closeSheet(); render(); toast('حُفظت البنود');
+        const plans = [planCard(c, work)];
+        if (b.querySelector('#cfAll').checked) S.cars.forEach(x => { if (x !== c) plans.push(planCard(x, work)); });
+        runPlans(plans, 'حُفظت البنود', () => openSheet('بنود بطاقة السيارة', '', draw));
       };
     } else {
       b.innerHTML = `${work.map((f, i) => `<label class="field"><span>${esc(f.label)}</span><input data-i="${i}" maxlength="${LIMITS.text}" ${f.type === 'date' ? 'type="date"' : f.type === 'text' ? 'type="text"' : 'type="text" inputmode="decimal" class="num"'} value="${esc(f.value)}"></label>`).join('')}
@@ -734,10 +767,40 @@ function openAddSection() {
     });
   });
 }
-/* values of deleted items are removed too, so they do not linger in the data or in backups */
-function purgeRemoved(sec) {
-  const keep = new Set(sec.columns.map(c => c.id));
-  for (const r of sec.rows) for (const k of Object.keys(r.v)) if (!keep.has(k)) delete r.v[k];
+/* ---------- applying edited items to a car (keeps existing values) ---------- */
+const norm = v => String(v ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+/* pairs each new item with an old one: same id first, then same name */
+function matchItems(next, old, key) {
+  const used = new Set(), m = new Map();
+  for (const n of next) { const o = old.find(x => !used.has(x) && x.id === n.id); if (o) { used.add(o); m.set(n.id, o); } }
+  for (const n of next) { if (m.has(n.id)) continue; const o = old.find(x => !used.has(x) && norm(x[key]) === norm(n[key])); if (o) { used.add(o); m.set(n.id, o); } }
+  return { m, dropped: old.filter(x => !used.has(x)) };
+}
+const filled = v => v !== '' && v != null;
+function planCard(target, fields) {
+  const { m, dropped } = matchItems(fields, target.cardFields, 'label');
+  const next = fields.map(f => { const o = m.get(f.id); return { id: f.id, label: f.label, type: f.type, value: o ? cleanValue(f.type, o.value) : '' }; });
+  return { lost: dropped.filter(f => filled(f.value)).length, apply: () => { target.cardFields = next; } };
+}
+/* new columns for a section: each row's values move to the matching column; values of removed columns go */
+function planSection(sec, columns, meta) {
+  const { m, dropped } = matchItems(columns, sec.columns, 'label');
+  let lost = 0;
+  for (const r of sec.rows) for (const d of dropped) if (filled(r.v[d.id])) lost++;
+  return { lost, apply: () => {
+    for (const r of sec.rows) {
+      const v = {};
+      for (const c of columns) { if (c.type === 'distance') continue; const o = m.get(c.id); v[c.id] = o && has(r.v, o.id) ? cleanValue(c.type, r.v[o.id]) : ''; }
+      r.v = v;
+    }
+    Object.assign(sec, meta, { columns: clone(columns) });
+  } };
+}
+function runPlans(plans, done, reopen) {
+  const lost = plans.reduce((a, p) => a + p.lost, 0);
+  const run = () => { plans.forEach(p => p.apply()); save(); closeSheet(); render(); toast(done); };
+  if (lost) confirmBox(`سيُحذف ${lost} ${lost === 1 ? 'قيمة مسجّلة' : 'من القيم المسجّلة'} في بنود لم تعد موجودة. متابعة؟`, 'حفظ وحذف القيم', run, true, reopen);
+  else run();
 }
 function openSectionEditor(id, isNew) {
   const c = car(); const s = c.sections.find(x => x.id === id); if (!s) return;
@@ -767,15 +830,15 @@ function openSectionEditor(id, isNew) {
     b.querySelector('#seSave').onclick = () => {
       sync();
       if (work.columns.some(x => x.type === 'distance') && !work.columns.some(x => x.type === 'odometer')) { toast('بند المسافة يحتاج بنداً من نوع العداد'); return; }
-      Object.assign(s, { name: work.name, note: work.note, icon: work.icon, reminderKm: work.reminderKm, columns: clone(work.columns) });
-      purgeRemoved(s);
+      const meta = { name: work.name, icon: work.icon, reminderKm: work.reminderKm };
+      const plans = [planSection(s, work.columns, { ...meta, note: work.note })];
       if (b.querySelector('#seAll').checked) S.cars.forEach(x => {
         if (x === c) return;
-        const t = x.sections.find(y => y.id === s.id);
-        if (t) { Object.assign(t, { name: s.name, note: s.note, icon: s.icon, reminderKm: s.reminderKm, columns: clone(s.columns) }); purgeRemoved(t); }
-        else if (x.sections.length < LIMITS.sections) x.sections.push({ ...clone(s), note: '', rows: [] });
+        const t = x.sections.find(y => y.id === s.id) || x.sections.find(y => norm(y.name) === norm(work.name) || norm(y.name) === norm(s.name));
+        if (t) plans.push(planSection(t, work.columns, meta));
+        else if (x.sections.length < LIMITS.sections) plans.push({ lost: 0, apply: () => x.sections.push({ id: s.id, ...meta, note: '', columns: clone(work.columns), rows: [] }) });
       });
-      save(); closeSheet(); render(); toast('حُفظ القسم');
+      runPlans(plans, 'حُفظ القسم', () => openSheet('تعديل القسم', '', draw));
     };
     b.querySelector('#seDel').onclick = () => confirmBox(`حذف قسم «${s.name}» و${s.rows.length} تسجيل فيه؟`, 'حذف القسم', () => { c.sections = c.sections.filter(x => x !== s); save(); render(); toast('حُذف القسم'); });
   };
@@ -856,7 +919,7 @@ let excelLoading = null;
 function loadExcel() {
   if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
   return excelLoading || (excelLoading = new Promise((res, rej) => {
-    const s = document.createElement('script'); s.src = 'vendor/exceljs.min.js';
+    const s = document.createElement('script'); s.src = 'vendor/exceljs.min.js'; s.integrity = EXCELJS_SRI;
     s.onload = () => res(window.ExcelJS); s.onerror = () => { excelLoading = null; rej(new Error('تعذّر تحميل مكتبة الإكسل')); };
     document.head.appendChild(s);
   }));
@@ -865,7 +928,8 @@ const XL = { ink: 'FF12262E', amber: 'FFE9A23B', amberSoft: 'FFFBEBD0', zebra: '
 const thin = { style: 'thin', color: { argb: XL.line } };
 const border = { top: thin, left: thin, bottom: thin, right: thin };
 function sheetName(base, used) {
-  const n = base.replace(/[\[\]:*?\/\\']/g, ' ').trim().slice(0, 31) || 'ورقة';
+  let n = base.replace(/[\[\]:*?\/\\']/g, ' ').trim().slice(0, 31) || 'ورقة';
+  if (/^history$/i.test(n)) n += ' 1';
   let k = 2, out = n; while (used.has(out.toLowerCase())) { const suf = ` (${k++})`; out = n.slice(0, 31 - suf.length) + suf; }
   used.add(out.toLowerCase()); return out;
 }
@@ -951,7 +1015,8 @@ async function buildWorkbook(cars) {
   }
   /* -- restore data (hidden sheet) -- */
   const hid = wb.addWorksheet('_sayyarati', { state: 'veryHidden' });
-  const payload = JSON.stringify({ app: 'sayyarati', v: 1, exported: new Date().toISOString(), settings: S.settings, cars });
+  const payload = JSON.stringify({ app: 'sayyarati', v: 1, exported: new Date().toISOString(), settings: S.settings, cars })
+    .replace(/[\u007f-\uffff]/g, ch => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'));
   hid.getCell(1, 1).value = 'sayyarati-backup-v1';
   for (let i = 0, row = 2; i < payload.length; i += 30000, row++) hid.getCell(row, 1).value = payload.slice(i, i + 30000);
   return wb;
@@ -1049,7 +1114,7 @@ function nativeError(e) {
   if (e instanceof ImportError) return e;
   const code = e && e.code, msg = String((e && e.message) || e || '');
   if (code === 'TOO_LARGE') return new ImportError('too-large');
-  if (code === 'NO_PERMISSION' || code === 'READ_FAILED') return new ImportError('unreadable', msg);
+  if (code === 'NO_PERMISSION' || code === 'READ_FAILED' || code === 'TIMEOUT') return new ImportError('unreadable', msg);
   if (code === 'NO_XLSX') return new ImportError('sheets-export', msg);
   return new ImportError('other', msg);
 }
@@ -1073,6 +1138,7 @@ function showImportError(e) {
     'not-xlsx': 'هذا الملف ليس بصيغة Excel الحديثة (‎.xlsx‎). إن كان بصيغة ‎.xls‎ القديمة أو جدول Google Sheets، افتحه واحفظه أو نزّله بصيغة ‎.xlsx‎ ثم استورده.',
     'sheets-export': 'هذا جدول Google Sheets ولم يسمح الدرايف بتحويله تلقائياً. افتحه في Google Sheets واختر «تنزيل ← Microsoft Excel (‎.xlsx‎)» ثم استورد الملف الناتج.',
     'bad-backup': 'الملف فيه نسخة احتياطية تالفة أو ناقصة، فلم يُستورد شيء.',
+    'too-many': 'الملف فيه تسجيلات أكثر مما يتسع له التطبيق (15,000 تسجيل لكل السيارات معاً)، فلم يُستورد شيء.',
     'empty': 'لم أجد في الملف بيانات يمكن استيرادها.',
     'other': 'تعذّر استيراد الملف.'
   };
@@ -1104,7 +1170,10 @@ async function importBuffer(buf, fname) {
   const hid = wb.getWorksheet('_sayyarati');
   if (hid && String(cellVal(hid.getCell(1, 1))).startsWith('sayyarati-backup')) {
     let json = '';
-    for (let r = 2; r <= Math.min(hid.rowCount, 2000); r++) json += String(cellVal(hid.getCell(r, 1)) || '');
+    for (let r = 2; r <= Math.min(hid.rowCount, 2000); r++) {
+      json += String(cellVal(hid.getCell(r, 1)) || '');
+      if (json.length > LIMITS.backupChars) throw new ImportError('too-many');
+    }
     let data;
     try { data = JSON.parse(json); } catch (e) { throw new ImportError('bad-backup'); }
     if (!isObj(data) || !Array.isArray(data.cars)) throw new ImportError('bad-backup');
@@ -1113,12 +1182,14 @@ async function importBuffer(buf, fname) {
   const c = sanitizeCar(genericImport(wb, fname), new Set(S.cars.map(x => x.id)));
   if (!c || (!c.sections.some(s => s.rows.length) && !c.cardFields.some(f => f.value !== ''))) throw new ImportError('empty');
   const n = c.sections.reduce((a, s) => a + s.rows.length, 0);
+  if (n + countRows(S.cars) > LIMITS.totalRows) throw new ImportError('too-many');
   openSheet('استيراد سيارة', `<p style="margin:0 0 6px">وجدت في الملف:</p>
     <dl class="kv" style="margin-bottom:18px"><dt>السيارة</dt><dd>${esc(c.name)}</dd>${c.sections.map(s => `<dt>${esc(s.name)}</dt><dd>${s.rows.length} تسجيل</dd>`).join('')}<dt>بنود البطاقة</dt><dd>${c.cardFields.length}</dd></dl>
     <label class="field"><span>اسم السيارة</span><input id="giName" maxlength="${LIMITS.label}" value="${esc(c.name)}"></label>
     <button class="btn amber wide" id="giOk">إضافة السيارة (${n} تسجيل)</button>`, b => {
     b.querySelector('#giOk').onclick = () => {
       if (S.cars.length >= LIMITS.cars) { toast('وصلت إلى الحد الأقصى لعدد السيارات'); return; }
+      if (n + countRows(S.cars) > LIMITS.totalRows) { showImportError(new ImportError('too-many')); return; }
       c.name = str(b.querySelector('#giName').value, LIMITS.label).trim() || c.name;
       S.cars.push(c); S.activeCar = c.id; save(); closeSheet(); rolledFor = null; go('home'); toast(`استُوردت ${c.name}`);
     };
@@ -1127,9 +1198,10 @@ async function importBuffer(buf, fname) {
 function askRestore(raw) {
   const cars = sanitizeCars(raw.cars);
   const settings = sanitizeSettings(raw.settings);
-  const n = cars.reduce((a, c) => a + c.sections.reduce((x, s) => x + s.rows.length, 0), 0);
+  const n = countRows(cars);
   const when = parseDateAny(String(raw.exported || '').slice(0, 10));
   if (!cars.length) throw new ImportError('bad-backup');
+  if (n > LIMITS.totalRows) throw new ImportError('too-many');
   openSheet('استرجاع نسخة احتياطية', `<p style="margin:0 0 16px">${when ? `النسخة بتاريخ ${dateHTML(when)} ` : 'النسخة '}وفيها ${cars.length} ${cars.length === 1 ? 'سيارة' : 'سيارات'} و${n} تسجيل.</p>
     <button class="btn amber wide" id="rMerge">دمج مع بياناتي الحالية</button>
     <p class="hint" style="font-size:13px;color:var(--muted);margin:6px 2px 14px">السيارة الموجودة في النسختين تُستبدل بنسخة الملف، وتبقى السيارات الأخرى.</p>
@@ -1137,7 +1209,8 @@ function askRestore(raw) {
     b.querySelector('#rMerge').onclick = () => {
       const merged = S.cars.slice();
       for (const c of cars) { const i = merged.findIndex(x => x.id === c.id); if (i >= 0) merged[i] = c; else merged.push(c); }
-      finishRestore(merged.slice(0, LIMITS.cars), settings);
+      if (countRows(merged) > LIMITS.totalRows || merged.length > LIMITS.cars) { showImportError(new ImportError('too-many')); return; }
+      finishRestore(merged, settings);
     };
     b.querySelector('#rReplace').onclick = () => confirmBox('ستُحذف كل البيانات الحالية وتحل محلها النسخة. متابعة؟', 'استبدال', () => finishRestore(cars, settings));
   });
@@ -1258,6 +1331,6 @@ $('#sheetClose').onclick = closeSheet;
   applyTheme();
   try { render(); } catch (e) { console.error(e); S = sanitizeState(S); render(); }
   if (isNative) initNative();
-  if (!isNative && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if (!isNative && 'serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 })();

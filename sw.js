@@ -1,6 +1,6 @@
 /* سيّارتي — service worker: keeps the web version working offline.
    Only the app's own files are cached; nothing is ever sent anywhere. */
-const APPV = '1.1.0';
+const APPV = '8f57006fcc59';
 const VERSION = 'sayyarati-v' + APPV;
 const ASSETS = ['./', './index.html', './app.js?v=' + APPV, './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png', './favicon.png',
@@ -19,6 +19,8 @@ self.addEventListener('activate', e => e.waitUntil((async () => {
 })()));
 
 const cacheable = r => r && r.ok && r.type === 'basic';
+/* only ever read from this app's own cache (other pages on the same site have their own) */
+const fromCache = req => caches.open(VERSION).then(c => c.match(req));
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
@@ -30,11 +32,11 @@ self.addEventListener('fetch', e => {
       const isApp = url.pathname === new URL(SCOPE).pathname || url.pathname.endsWith('/index.html');
       if (cacheable(r) && isApp) { const cp = r.clone(); caches.open(VERSION).then(c => c.put('./index.html', cp)); }
       return r;
-    }).catch(() => caches.match('./index.html')));
+    }).catch(() => fromCache('./index.html')));
     return;
   }
   if (!KNOWN.has(url.href)) return;
-  e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(r => {
+  e.respondWith(fromCache(req).then(hit => hit || fetch(req).then(r => {
     if (cacheable(r)) { const cp = r.clone(); caches.open(VERSION).then(c => c.put(req, cp)); }
     return r;
   })));

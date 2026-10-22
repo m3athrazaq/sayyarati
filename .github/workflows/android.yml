@@ -1,7 +1,10 @@
-# Builds the Android app from the same web files and publishes it in Releases.
+# Android app: first an emulator test of a debug build (native/selftest: system file picker,
+# "Open with", "Share", export, restore, restart — results and screenshots go to the
+# "ci-android-smoke" pre-release), then — only if it passes — the signed release APK.
 # Stable link: https://github.com/<owner>/<repo>/releases/latest/download/sayyarati.apk
-# Signing: native/signing/sayyarati-release.p12.enc, unlocked with the SIGNING_PASSPHRASE secret.
-name: Android app (APK)
+# Signing: native/signing/sayyarati-release.p12.enc, unlocked with the SIGNING_PASSPHRASE secret,
+# only in the signing step (the build itself never sees the key).
+name: Android app (test + APK)
 
 on:
   workflow_dispatch:
@@ -15,23 +18,117 @@ on:
       - 'vendor/**'
       - 'fonts/**'
       - 'native/**'
-      - '!native/selftest/**'
       - '.github/workflows/android.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: android-build
+  group: android
   cancel-in-progress: true
 
 env:
-  APP_VERSION: '1.1.0'
+  APP_VERSION: '1.1.1'
   BUILD_NUMBER: ${{ github.run_number }}
   CERT_SHA256: '55:B6:16:EB:D2:A3:19:71:A9:36:6B:3C:AC:FD:CA:1F:B6:2D:B7:8E:64:83:0E:93:C4:F6:95:65:76:53:7F:1B'
 
 jobs:
-  android:
+  emulator-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: write   # to publish the test results as a pre-release
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: native/package-lock.json
+
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: App files + self-test hook (test build only)
+        run: |
+          python3 tools/stamp.py --check
+          rm -rf native/www && mkdir -p native/www
+          cp -R index.html app.js manifest.webmanifest *.png vendor fonts native/www/
+          cp native/selftest/selftest.js native/selftest/fixture-f150-layout.xlsx native/www/
+          python3 - <<'PY'
+          import pathlib
+          p = pathlib.Path("native/www/index.html")
+          s = p.read_text(encoding="utf-8")
+          p.write_text(s.replace("</body>", '<script src="selftest.js"></script>\n</body>'), encoding="utf-8")
+          PY
+
+      - name: Install + sync
+        working-directory: native
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx cap sync android
+
+      - name: Build the test APK
+        working-directory: native/android
+        run: |
+          chmod +x gradlew
+          if ! ./gradlew --no-daemon assembleDebug > "$RUNNER_TEMP/build.log" 2>&1; then
+            grep -E "error:|e: |What went wrong|FAILURE|\.java:[0-9]+" "$RUNNER_TEMP/build.log" | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            tail -80 "$RUNNER_TEMP/build.log"
+            exit 1
+          fi
+          ls -la app/build/outputs/apk/debug/
+
+      - name: Gradle download checksum (for pinning in gradle-wrapper.properties)
+        run: |
+          Z=$(find ~/.gradle/wrapper/dists -name 'gradle-*.zip' | head -1)
+          [ -n "$Z" ] && echo "::notice::$(basename "$Z") sha256 $(sha256sum "$Z" | cut -d' ' -f1); official $(curl -sfL "https://services.gradle.org/distributions/$(basename "$Z").sha256" || echo '?')" || true
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run in the emulator (Android 15)
+        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
+          script: bash native/selftest/android-smoke.sh
+
+      - name: Publish results
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          find smoke -type f -empty -delete 2>/dev/null || true
+          ls -la smoke || true
+          if [ -f smoke/selftest-result.txt ]; then
+            grep -E "^(FAIL|ERROR)" smoke/selftest-result.txt | head -20 | while IFS= read -r l; do echo "::error::$l"; done
+            grep -E "^PASS" smoke/selftest-result.txt | head -40 | while IFS= read -r l; do echo "::notice::$l"; done
+          else
+            echo "::error::no result file from the emulator test"
+          fi
+          gh release delete ci-android-smoke --repo "$REPO" --yes --cleanup-tag || true
+          gh release create ci-android-smoke smoke/* --repo "$REPO" --target "$SHA" \
+            --prerelease --latest=false --title "CI Android emulator test" --notes "Automated emulator run for $SHA" || true
+
+  release:
+    needs: emulator-test
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -56,6 +153,7 @@ jobs:
 
       - name: Copy the app files into the phone project
         run: |
+          python3 tools/stamp.py --check
           rm -rf native/www && mkdir -p native/www
           cp -R index.html app.js manifest.webmanifest *.png vendor fonts native/www/
 
@@ -65,7 +163,19 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           npx cap sync android
 
-      - name: Unlock the signing key
+      - name: Build the APK (unsigned)
+        working-directory: native/android
+        run: |
+          export VERSION_CODE=$((BUILD_NUMBER + 100))
+          chmod +x gradlew
+          if ! ./gradlew --no-daemon assembleRelease > "$RUNNER_TEMP/build.log" 2>&1; then
+            grep -E "error:|e: |What went wrong|FAILURE|\.java:[0-9]+" "$RUNNER_TEMP/build.log" | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            tail -80 "$RUNNER_TEMP/build.log"
+            exit 1
+          fi
+          ls -la app/build/outputs/apk/release/
+
+      - name: Sign the APK
         env:
           SIGNING_PASSPHRASE: ${{ secrets.SIGNING_PASSPHRASE }}
         run: |
@@ -73,31 +183,22 @@ jobs:
             echo "::error::Add the SIGNING_PASSPHRASE secret (Settings > Secrets and variables > Actions) to sign the app."
             exit 1
           fi
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          IN=native/android/app/build/outputs/apk/release/app-release-unsigned.apk
+          KS="$RUNNER_TEMP/release.p12"
+          trap 'rm -f "$KS"' EXIT
+          umask 077
           openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -md sha256 \
-            -in native/signing/sayyarati-release.p12.enc -out "$RUNNER_TEMP/release.p12" -pass env:SIGNING_PASSPHRASE
-          chmod 600 "$RUNNER_TEMP/release.p12"
-
-      - name: Build the signed APK
-        working-directory: native/android
-        env:
-          MR_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_PASSPHRASE }}
-        run: |
-          export VERSION_CODE=$((BUILD_NUMBER + 100))
-          export MR_KEYSTORE="$RUNNER_TEMP/release.p12"
-          export MR_KEY_ALIAS=sayyarati
-          chmod +x gradlew
-          if ! ./gradlew --no-daemon assembleRelease > "$RUNNER_TEMP/build.log" 2>&1; then
-            grep -E "error:|warning: \[|e: |What went wrong|FAILURE|\.java:[0-9]+" "$RUNNER_TEMP/build.log" | head -40 | while IFS= read -r l; do echo "::error::$l"; done
-            tail -80 "$RUNNER_TEMP/build.log"
-            rm -f "$RUNNER_TEMP/release.p12"
-            exit 1
-          fi
-          rm -f "$RUNNER_TEMP/release.p12"
-          ls -la app/build/outputs/apk/release/
+            -in native/signing/sayyarati-release.p12.enc -out "$KS" -pass env:SIGNING_PASSPHRASE
+          mkdir -p out
+          "$BT/zipalign" -p -f 4 "$IN" "$RUNNER_TEMP/aligned.apk"
+          "$BT/apksigner" sign --ks "$KS" --ks-type PKCS12 --ks-key-alias sayyarati \
+            --ks-pass env:SIGNING_PASSPHRASE --key-pass env:SIGNING_PASSPHRASE \
+            --out out/sayyarati.apk "$RUNNER_TEMP/aligned.apk"
 
       - name: Check the APK
         run: |
-          APK=native/android/app/build/outputs/apk/release/app-release.apk
+          APK=out/sayyarati.apk
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           "$BT/apksigner" verify --verbose --print-certs "$APK" | tee verify.txt
           WANT=$(echo "$CERT_SHA256" | tr -d ':' | tr 'A-F' 'a-f')
@@ -105,7 +206,8 @@ jobs:
           "$BT/aapt2" dump badging "$APK" | grep -E "^package:|^sdkVersion|^targetSdkVersion|^application-label" | cut -c1-300
           "$BT/aapt2" dump permissions "$APK" | tee perms.txt
           if grep -q "android.permission.INTERNET" perms.txt; then echo "::error::The app must not have internet access"; exit 1; fi
-          mkdir -p out && cp "$APK" out/sayyarati.apk && sha256sum out/sayyarati.apk | tee out/sha256.txt
+          if "$BT/aapt2" dump xmltree "$APK" --file AndroidManifest.xml | grep -q 'android:debuggable.*0xffffffff'; then echo "::error::Release APK must not be debuggable"; exit 1; fi
+          sha256sum "$APK" | tee out/sha256.txt
 
       - name: Publish
         env:
@@ -115,13 +217,11 @@ jobs:
         run: |
           TAG="v$APP_VERSION-$BUILD_NUMBER"
           BASE="https://github.com/$REPO/releases/latest/download"
-          OWNER="${REPO%%/*}"; NAME="${REPO##*/}"
           printf '%s\n' \
             "سيّارتي — النسخة $APP_VERSION (بناء $BUILD_NUMBER)" "" \
             "- **أندرويد:** [sayyarati.apk]($BASE/sayyarati.apk) — افتح الرابط على الهاتف، ثم ثبّت الملف واسمح بالتثبيت من المتصفح عند السؤال." \
-            "- **آيفون (ويب):** https://$OWNER.github.io/$NAME/ — افتحه في Safari ثم «مشاركة ← إضافة إلى الشاشة الرئيسية»." \
-            "" "SHA-256 للملف: \`$(cut -d' ' -f1 out/sha256.txt)\`" \
-            "" "الرابط أعلاه ثابت ويشير دائمًا إلى آخر نسخة، والتحديث يُثبَّت فوق القديم مع بقاء البيانات." > notes.md
+            "- التحديثات تُثبَّت فوق النسخة السابقة مع بقاء البيانات. **استثناء واحد:** إن كانت عندك النسخة 1.0 فاحذفها أولاً ثم ثبّت هذه (تغيّر مفتاح التوقيع لأسباب أمنية)، وصدّر نسخة احتياطية قبل الحذف إن كنت أدخلت بيانات." \
+            "" "SHA-256 للملف: \`$(cut -d' ' -f1 out/sha256.txt)\`" > notes.md
           set +e
           gh release create "$TAG" out/sayyarati.apk --repo "$REPO" --target "$SHA" \
             --title "سيّارتي $APP_VERSION ($BUILD_NUMBER)" --notes-file notes.md --latest > release.log 2>&1

@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.net.Uri;
@@ -21,6 +22,12 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Brings an Excel file into the app.
@@ -32,14 +39,25 @@ import java.io.InputStream;
  * - pick(): opens the system file picker (Drive, Downloads, Files...).
  * - takeOpenedFile(): the file the app was opened with ("Open with" / "Share" from another app).
  *
- * Only content:// files the user chose are read, at most MAX_BYTES, and nothing is written anywhere:
- * the bytes go to the page, which validates them before anything is imported.
+ * Only content:// files the user chose are read, at most MAX_BYTES, on the plugin's own threads with a
+ * time limit (a provider that never answers cannot block the rest of the app), and nothing is written
+ * anywhere: the bytes go to the page, which validates them before anything is imported.
  */
 @CapacitorPlugin(name = "XlsxImport")
 public class XlsxImportPlugin extends Plugin {
 
     static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     static final int MAX_BYTES = 20 * 1024 * 1024;
+    static final long TIMEOUT_SECONDS = 120;
+
+    private final ExecutorService reader = Executors.newFixedThreadPool(2, r -> daemon(r, "XlsxImport-read"));
+    private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> daemon(r, "XlsxImport-timer"));
+
+    private static Thread daemon(Runnable r, String name) {
+        Thread t = new Thread(r, name);
+        t.setDaemon(true);
+        return t;
+    }
 
     /** file handed to the app by another app, waiting for the page to take it */
     private Uri pendingUri;
@@ -48,7 +66,7 @@ public class XlsxImportPlugin extends Plugin {
     protected void handleOnNewIntent(Intent intent) {
         super.handleOnNewIntent(intent);
         Uri uri = incomingUri(intent);
-        if (uri != null) {
+        if (uri != null && allowed(uri)) {
             pendingUri = uri;
             notifyListeners("fileOpened", new JSObject(), true);
         }
@@ -69,6 +87,18 @@ public class XlsxImportPlugin extends Plugin {
         }
         if (uri == null || !ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) return null;
         return uri;
+    }
+
+    /**
+     * Files from other apps only: an address of this app's own FileProvider is refused, so another app
+     * cannot make it reopen its own cached files. (The emulator test hands its sample files over that
+     * way, so debug builds allow it.)
+     */
+    private boolean allowed(Uri uri) {
+        String authority = uri.getAuthority();
+        if (authority == null || authority.isEmpty()) return false;
+        if (!authority.startsWith(getContext().getPackageName())) return true;
+        return (getContext().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
 
     @PluginMethod
@@ -115,28 +145,46 @@ public class XlsxImportPlugin extends Plugin {
     }
 
     private void readInBackground(PluginCall call, Uri uri, boolean saved) {
-        getBridge().execute(() -> {
+        AtomicBoolean finished = new AtomicBoolean(false);
+        Future<?> job = reader.submit(() -> {
+            JSObject r = null;
+            String error = null, code = null;
             try {
                 Context ctx = getContext();
                 ContentResolver cr = ctx.getContentResolver();
                 byte[] bytes = readBytes(ctx, cr, uri);
-                JSObject r = new JSObject();
+                r = new JSObject();
                 r.put("name", displayName(cr, uri));
                 r.put("size", bytes.length);
                 r.put("data", Base64.encodeToString(bytes, Base64.NO_WRAP));
-                call.resolve(r);
             } catch (TooLargeException e) {
-                call.reject("The file is larger than " + (MAX_BYTES / 1024 / 1024) + " MB", "TOO_LARGE");
+                error = "The file is larger than " + (MAX_BYTES / 1024 / 1024) + " MB";
+                code = "TOO_LARGE";
             } catch (NoXlsxException e) {
-                call.reject("This Google Sheets file cannot be exported as .xlsx here", "NO_XLSX");
+                error = "This Google Sheets file cannot be exported as .xlsx here";
+                code = "NO_XLSX";
             } catch (SecurityException e) {
-                call.reject("No permission to read the file", "NO_PERMISSION");
+                error = "No permission to read the file";
+                code = "NO_PERMISSION";
             } catch (Exception e) {
-                call.reject(e.getClass().getSimpleName() + ": " + e.getMessage(), "READ_FAILED");
-            } finally {
-                if (saved) getBridge().releaseCall(call);
+                error = e.getClass().getSimpleName() + ": " + e.getMessage();
+                code = "READ_FAILED";
             }
+            if (!finished.compareAndSet(false, true)) return; // timed out already
+            if (r != null) call.resolve(r);
+            else call.reject(error, code);
+            if (saved) getBridge().releaseCall(call);
         });
+        timer.schedule(
+            () -> {
+                if (!finished.compareAndSet(false, true)) return;
+                job.cancel(true);
+                call.reject("Reading the file took too long", "TIMEOUT");
+                if (saved) getBridge().releaseCall(call);
+            },
+            TIMEOUT_SECONDS,
+            TimeUnit.SECONDS
+        );
     }
 
     private static byte[] readBytes(Context ctx, ContentResolver cr, Uri uri) throws IOException {
