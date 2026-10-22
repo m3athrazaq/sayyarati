@@ -27,5 +27,5 @@
 - `fonts/`: خط Readex Pro (رخصة OFL).
 - `native/`: يحوّل الملفات نفسها إلى تطبيق أندرويد (Capacitor)، ومعه إضافة `XlsxImportPlugin` التي تقرأ ملف الإكسل المختار، و`native/selftest/` لاختبار التطبيق تلقائياً على محاكي أندرويد.
 - `native/signing/`: مفتاح توقيع نسخة أندرويد، مشفّراً. يُفتح على GitHub فقط بالسر `SIGNING_PASSPHRASE`. لا تحذفه، فالتحديثات لا تُثبَّت إلا بالمفتاح نفسه.
-- `.github/workflows/`: كل تعديل يُرفع يختبر التطبيق على محاكي أندرويد ثم يبني ملف APK الموقّع وينشره في Releases، ويختبر نسخة الويب (`tests/web.test.js`).
+- `.github/workflows/`: كل تعديل يُرفع يبني ملف APK الموقّع وينشره في Releases، ويختبر نسخة الويب (`tests/web.test.js`). واختبار محاكي أندرويد يُشغَّل يدوياً (Actions ← Android emulator test)، ويحتاج أن يكون المستودع عاماً ليعمل على أجهزة GitHub.
 - `tools/stamp.py`: يحدّث بصمات `app.js` وإصدار ذاكرة الويب بعد أي تعديل.

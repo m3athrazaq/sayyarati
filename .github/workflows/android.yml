@@ -1,10 +1,8 @@
-# Android app: first an emulator test of a debug build (native/selftest: system file picker,
-# "Open with", "Share", export, restore, restart — results and screenshots go to the
-# "ci-android-smoke" pre-release), then — only if it passes — the signed release APK.
+# Builds the signed Android APK and publishes it in Releases.
 # Stable link: https://github.com/<owner>/<repo>/releases/latest/download/sayyarati.apk
 # Signing: native/signing/sayyarati-release.p12.enc, unlocked with the SIGNING_PASSPHRASE secret,
 # only in the signing step (the build itself never sees the key).
-name: Android app (test + APK)
+name: Android app (APK)
 
 on:
   workflow_dispatch:
@@ -18,13 +16,14 @@ on:
       - 'vendor/**'
       - 'fonts/**'
       - 'native/**'
+      - '!native/selftest/**'
       - '.github/workflows/android.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: android
+  group: android-release
   cancel-in-progress: true
 
 env:
@@ -33,120 +32,7 @@ env:
   CERT_SHA256: '55:B6:16:EB:D2:A3:19:71:A9:36:6B:3C:AC:FD:CA:1F:B6:2D:B7:8E:64:83:0E:93:C4:F6:95:65:76:53:7F:1B'
 
 jobs:
-  emulator-test:
-    runs-on: ubuntu-24.04   # pinned: the Android emulator does not boot on the new ubuntu-latest image
-    timeout-minutes: 55
-    permissions:
-      contents: write   # to publish the test results as a pre-release
-    steps:
-      - name: Hardware acceleration for the emulator
-        id: kvm
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
-            echo "ok=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No hardware acceleration (/dev/kvm) on this runner, so the Android emulator cannot run here; the emulator test is skipped. (GitHub provides it on runners for public repositories.)"
-          fi
-
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        if: steps.kvm.outputs.ok == 'true'
-        with:
-          persist-credentials: false
-
-      - uses: gradle/actions/wrapper-validation@0723195856401067f7a2779048b490ace7a47d7c # v5.0.2
-        if: steps.kvm.outputs.ok == 'true'
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
-        if: steps.kvm.outputs.ok == 'true'
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: native/package-lock.json
-
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
-        if: steps.kvm.outputs.ok == 'true'
-        with:
-          distribution: temurin
-          java-version: 21
-
-      - name: App files + self-test hook (test build only)
-        if: steps.kvm.outputs.ok == 'true'
-        run: |
-          python3 tools/stamp.py --check
-          rm -rf native/www && mkdir -p native/www
-          cp -R index.html app.js manifest.webmanifest *.png vendor fonts native/www/
-          cp native/selftest/selftest.js native/selftest/fixture-f150-layout.xlsx native/www/
-          python3 - <<'PY'
-          import pathlib
-          p = pathlib.Path("native/www/index.html")
-          s = p.read_text(encoding="utf-8")
-          p.write_text(s.replace("</body>", '<script src="selftest.js"></script>\n</body>'), encoding="utf-8")
-          PY
-
-      - name: Install + sync
-        if: steps.kvm.outputs.ok == 'true'
-        working-directory: native
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund
-          npx cap sync android
-
-      - name: Build the test APK
-        if: steps.kvm.outputs.ok == 'true'
-        working-directory: native/android
-        run: |
-          chmod +x gradlew
-          if ! ./gradlew --no-daemon assembleDebug > "$RUNNER_TEMP/build.log" 2>&1; then
-            grep -E "error:|e: |What went wrong|FAILURE|\.java:[0-9]+" "$RUNNER_TEMP/build.log" | head -40 | while IFS= read -r l; do echo "::error::$l"; done
-            tail -80 "$RUNNER_TEMP/build.log"
-            exit 1
-          fi
-          ls -la app/build/outputs/apk/debug/
-
-      - name: Gradle download checksum (for pinning in gradle-wrapper.properties)
-        if: steps.kvm.outputs.ok == 'true'
-        run: |
-          Z=$(find ~/.gradle/wrapper/dists -name 'gradle-*.zip' | head -1)
-          [ -n "$Z" ] && echo "::notice::$(basename "$Z") sha256 $(sha256sum "$Z" | cut -d' ' -f1); official $(curl -sfL "https://services.gradle.org/distributions/$(basename "$Z").sha256" || echo '?')" || true
-
-      - name: Run in the emulator (Android 15)
-        if: steps.kvm.outputs.ok == 'true'
-        timeout-minutes: 32
-        uses: ReactiveCircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
-        with:
-          emulator-boot-timeout: 900
-          api-level: 35
-          arch: x86_64
-          target: google_apis
-          profile: pixel_6
-          disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -no-snapshot
-          script: bash native/selftest/android-smoke.sh
-
-      - name: Publish results
-        if: always() && steps.kvm.outputs.ok == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: |
-          find smoke -type f -empty -delete 2>/dev/null || true
-          ls -la smoke || true
-          if [ -f smoke/selftest-result.txt ]; then
-            grep -E "^(FAIL|ERROR)" smoke/selftest-result.txt | head -20 | while IFS= read -r l; do echo "::error::$l"; done
-            grep -E "^PASS" smoke/selftest-result.txt | head -40 | while IFS= read -r l; do echo "::notice::$l"; done
-          else
-            echo "::error::no result file from the emulator test"
-          fi
-          gh release delete ci-android-smoke --repo "$REPO" --yes --cleanup-tag || true
-          gh release create ci-android-smoke smoke/* --repo "$REPO" --target "$SHA" \
-            --prerelease --latest=false --title "CI Android emulator test" --notes "Automated emulator run for $SHA" || true
-
   release:
-    needs: emulator-test
     runs-on: ubuntu-24.04   # pinned: the Android emulator does not boot on the new ubuntu-latest image
     timeout-minutes: 40
     permissions:
