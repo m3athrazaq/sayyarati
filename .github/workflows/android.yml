@@ -75,6 +75,12 @@ jobs:
           "$BT/aapt2" dump badging "$APK" | grep -E "^package:|^sdkVersion|^targetSdkVersion|^application-label" | cut -c1-300
           mkdir -p out && cp "$APK" out/sayyarati.apk && ls -la out/
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sayyarati-apk
+          path: out/sayyarati.apk
+          if-no-files-found: error
+
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -88,5 +94,8 @@ jobs:
             "- **أندرويد:** [sayyarati.apk]($BASE/sayyarati.apk) — افتح الرابط على الهاتف، ثم ثبّت الملف واسمح بالتثبيت من المتصفح عند السؤال." \
             "- **آيفون (ويب):** https://$OWNER.github.io/$NAME/ — افتحه في Safari ثم «مشاركة ← إضافة إلى الشاشة الرئيسية»." \
             "" "الرابط أعلاه ثابت ويشير دائمًا إلى آخر نسخة، والتحديث يُثبَّت فوق القديم مع بقاء البيانات." > notes.md
+          set +e
           gh release create "$TAG" out/sayyarati.apk --repo "$REPO" --target "${{ github.sha }}" \
-            --title "سيّارتي $APP_VERSION ($BUILD_NUMBER)" --notes-file notes.md --latest
+            --title "سيّارتي $APP_VERSION ($BUILD_NUMBER)" --notes-file notes.md --latest > release.log 2>&1
+          rc=$?; cat release.log
+          if [ $rc -ne 0 ]; then echo "::error::$(tr '\n' ' ' < release.log)"; exit 1; fi
