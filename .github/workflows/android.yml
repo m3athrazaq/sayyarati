@@ -75,12 +75,6 @@ jobs:
           "$BT/aapt2" dump badging "$APK" | grep -E "^package:|^sdkVersion|^targetSdkVersion|^application-label" | cut -c1-300
           mkdir -p out && cp "$APK" out/sayyarati.apk && ls -la out/
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: sayyarati-apk
-          path: out/sayyarati.apk
-          if-no-files-found: error
-
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
