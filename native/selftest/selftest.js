@@ -12,7 +12,8 @@
   const FS = P.Filesystem;
   const save = () => FS && FS.writeFile({ path: 'selftest-result.txt', data: log.join('\n') + '\n', directory: 'DATA', encoding: 'utf8' }).catch(() => {});
   const mark = async (m, ms) => { log.push(m); await save(); if (ms) await wait(ms); };
-  const until = async (fn, secs) => { for (let i = 0; i < secs * 4; i++) { try { if (await fn()) return true; } catch (e) { /* not yet */ } await wait(250); } return false; };
+  /* time-based (timers run slower while another app covers this one) */
+  const until = async (fn, secs) => { const end = Date.now() + secs * 1000; while (Date.now() < end) { try { if (await fn()) return true; } catch (e) { /* not yet */ } await wait(250); } return false; };
   const state = () => { try { return JSON.parse(localStorage.getItem('sayyarati.state.v1')) || { cars: [] }; } catch (e) { return { cars: [] }; } };
   const rows = c => c.sections.reduce((a, s) => a + s.rows.length, 0);
   const allRows = () => state().cars.reduce((a, c) => a + rows(c), 0);
