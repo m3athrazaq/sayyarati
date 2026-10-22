@@ -1,0 +1,9 @@
+{
+  "appId": "com.m3athrazaq.sayyarati",
+  "appName": "سيّارتي",
+  "webDir": "www",
+  "backgroundColor": "#12262E",
+  "plugins": {
+    "SystemBars": { "insetsHandling": "native", "initialViewportFitValueHint": "cover" }
+  }
+}

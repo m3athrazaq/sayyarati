@@ -1,0 +1,92 @@
+# Builds the Android app from the same web files and publishes it in Releases.
+# Stable link: https://github.com/<owner>/<repo>/releases/latest/download/sayyarati.apk
+name: Android app (APK)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'manifest.webmanifest'
+      - '*.png'
+      - 'vendor/**'
+      - 'fonts/**'
+      - 'native/**'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-build
+  cancel-in-progress: true
+
+env:
+  APP_VERSION: '1.0.0'
+  BUILD_NUMBER: ${{ github.run_number }}
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: native/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Copy the app files into the phone project
+        run: |
+          rm -rf native/www && mkdir -p native/www
+          cp -R index.html manifest.webmanifest *.png vendor fonts native/www/
+
+      - name: Install Capacitor and sync the Android project
+        working-directory: native
+        run: |
+          npm ci
+          npx cap sync android
+
+      - name: Build the signed APK
+        working-directory: native/android
+        run: |
+          export VERSION_CODE=$((BUILD_NUMBER + 100))
+          export MR_KEYSTORE="$GITHUB_WORKSPACE/native/signing/sayyarati-release.p12"
+          export MR_KEYSTORE_PASSWORD="$(sed -n 's/^storePassword=//p' ../signing/keystore.properties)"
+          export MR_KEY_ALIAS="$(sed -n 's/^keyAlias=//p' ../signing/keystore.properties)"
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+          ls -la app/build/outputs/apk/release/
+
+      - name: Check the APK
+        run: |
+          APK=native/android/app/build/outputs/apk/release/app-release.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --verbose --print-certs "$APK" | tee verify.txt
+          grep -qi "93:36:14:4F:8E:72:DC:56:C3:D2:61:15:18:BE:65:39:99:C7:ED:C2:15:E6:38:00:BE:76:6F:4F:34:7C:B3:AA\|9336144f8e72dc56c3d2611518be653999c7edc215e63800be766f4f347cb3aa" verify.txt
+          "$BT/aapt2" dump badging "$APK" | grep -E "^package:|^sdkVersion|^targetSdkVersion|^application-label" | cut -c1-300
+          mkdir -p out && cp "$APK" out/sayyarati.apk && ls -la out/
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          TAG="v$APP_VERSION-$BUILD_NUMBER"
+          BASE="https://github.com/$REPO/releases/latest/download"
+          OWNER="${REPO%%/*}"; NAME="${REPO##*/}"
+          printf '%s\n' \
+            "سيّارتي — النسخة $APP_VERSION (بناء $BUILD_NUMBER)" "" \
+            "- **أندرويد:** [sayyarati.apk]($BASE/sayyarati.apk) — افتح الرابط على الهاتف، ثم ثبّت الملف واسمح بالتثبيت من المتصفح عند السؤال." \
+            "- **آيفون (ويب):** https://$OWNER.github.io/$NAME/ — افتحه في Safari ثم «مشاركة ← إضافة إلى الشاشة الرئيسية»." \
+            "" "الرابط أعلاه ثابت ويشير دائمًا إلى آخر نسخة، والتحديث يُثبَّت فوق القديم مع بقاء البيانات." > notes.md
+          gh release create "$TAG" out/sayyarati.apk --repo "$REPO" --target "${{ github.sha }}" \
+            --title "سيّارتي $APP_VERSION ($BUILD_NUMBER)" --notes-file notes.md --latest

@@ -1,0 +1,14 @@
+{
+  "name": "sayyarati-native",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Android build of سيّارتي (Capacitor shell around the offline web app)",
+  "dependencies": {
+    "@capacitor/android": "^8.5.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/core": "^8.5.2",
+    "@capacitor/filesystem": "^8.1.4",
+    "@capacitor/share": "^8.0.3"
+  },
+  "devDependencies": { "@capacitor/cli": "^8.5.2" }
+}

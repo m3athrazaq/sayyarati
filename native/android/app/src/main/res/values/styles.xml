@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Base application theme. -->
+    <style name="AppTheme" parent="Theme.AppCompat.Light.DarkActionBar">
+        <!-- Customize your theme here. -->
+        <item name="colorPrimary">@color/colorPrimary</item>
+        <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
+        <item name="colorAccent">@color/colorAccent</item>
+    </style>
+
+    <!-- Theme BridgeActivity switches to once the app runs. The bar/window colours follow the web
+         page's light/dark background, so no grey or indigo default shows around the WebView. -->
+    <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:background">@null</item>
+        <item name="android:windowBackground">@color/mr_background</item>
+        <item name="android:statusBarColor">@color/mr_background</item>
+        <item name="android:navigationBarColor">@color/mr_navigation_bar</item>
+    </style>
+
+    <!-- Launch screen: the app icon centred on #12262E. Android 12+ draws it with the system
+         SplashScreen API; on Android 7-11 core-splashscreen's window background draws the same
+         icon at the same size. -->
+    <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/mr_splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon</item>
+        <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

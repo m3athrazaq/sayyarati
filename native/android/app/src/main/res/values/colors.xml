@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="mr_splash_background">#12262E</color>
+    <color name="mr_background">#12262E</color>
+    <color name="mr_navigation_bar">#000000</color>
+</resources>
