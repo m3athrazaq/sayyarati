@@ -1,19 +1,12 @@
 # Emulator test of a debug build (native/selftest: system file picker, "Open with", "Share",
 # export, restore, restart); results and screenshots go to the "ci-android-smoke" pre-release.
-# Runs on every change to the app (and by hand: Actions > Android emulator test > Run workflow).
-# The emulator needs the faster runners GitHub gives to public repositories.
+# Started by hand (Actions > Android emulator test > Run workflow). On GitHub's standard runners the
+# emulator currently boots but is too slow to run the app's WebView test reliably, so it is not run on
+# every change; the release build does not depend on it.
 name: Android emulator test
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'index.html'
-      - 'app.js'
-      - 'vendor/**'
-      - 'native/**'
-      - '.github/workflows/android-emulator-test.yml'
 
 permissions:
   contents: read
