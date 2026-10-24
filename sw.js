@@ -1,10 +1,12 @@
 /* سيّارتي — service worker: keeps the web version working offline.
    Only the app's own files are cached; nothing is ever sent anywhere. */
-const APPV = '8f57006fcc59';
+const APPV = '44479f6081da';
 const VERSION = 'sayyarati-v' + APPV;
+/* files the app loads on demand (Excel and PDF), with the version in their address — written by tools/stamp.py */
+const LAZY = ["./vendor/exceljs.min.js?v=Pqp51FUN2qz", "./vendor/pdf-lib.min.js?v=weMABwrltA6j", "./vendor/fontkit.umd.min.js?v=2p6U1mmqF10", "./vendor/bidi.min.js?v=wQtTdqzwTFhz", "./report.js?v=4BZRXPnXfxil", "./fonts/readex-report-400.ttf?v=ZM9Zf46J0OTw", "./fonts/readex-report-700.ttf?v=3xKwULn0RBRa"];
 const ASSETS = ['./', './index.html', './app.js?v=' + APPV, './manifest.webmanifest',
   './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png', './favicon.png',
-  './vendor/exceljs.min.js',
+  ...LAZY,
   './fonts/readex-pro-arabic-300-normal.woff2', './fonts/readex-pro-arabic-400-normal.woff2', './fonts/readex-pro-arabic-500-normal.woff2', './fonts/readex-pro-arabic-700-normal.woff2',
   './fonts/readex-pro-latin-300-normal.woff2', './fonts/readex-pro-latin-400-normal.woff2', './fonts/readex-pro-latin-500-normal.woff2', './fonts/readex-pro-latin-700-normal.woff2'];
 const SCOPE = self.registration.scope;

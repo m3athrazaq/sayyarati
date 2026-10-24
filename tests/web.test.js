@@ -92,6 +92,19 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
     const xmls = require('child_process').execSync(`unzip -p "${exported}" 'xl/worksheets/*.xml'`).toString();
     ok(!/<f>[^<]*HYPERLINK/i.test(xmls), 'formula-looking text was not written as a formula');
 
+    /* 4b. PDF report of one car, with and without amounts */
+    await p.click('#quickExport'); await p.waitForTimeout(300);
+    if (await p.isVisible('[data-pc="0"]')) await p.click('[data-pc="0"]');
+    const [pd] = await Promise.all([p.waitForEvent('download', { timeout: 60000 }), p.click('#pDl')]);
+    const pdfFile = path.join(TMP, 'report.pdf'); await pd.saveAs(pdfFile); await p.waitForTimeout(300);
+    const pdf = fs.readFileSync(pdfFile);
+    ok(pdf.slice(0, 5).toString() === '%PDF-' && pdf.length > 8000, 'PDF report created (' + Math.round(pdf.length / 1024) + ' KB)');
+    const hidden = await p.evaluate(() => JSON.stringify(reportModel(S.cars[0], true)));
+    const shown = await p.evaluate(() => JSON.stringify(reportModel(S.cars[0], false)));
+    ok(shown.includes('د.ك') && !hidden.includes('د.ك') && !hidden.includes('4,500') && hidden.includes('لا يتضمن المبالغ'), 'hide-amounts option removes prices and totals');
+    const hidOk = await p.evaluate(async () => { const b = await makePdf(S.cars[0], true); return b.size > 8000 && (await b.slice(0, 5).text()) === '%PDF-'; });
+    ok(hidOk, 'PDF without amounts created');
+
     /* 5. a crafted backup: nothing runs, everything is cleaned */
     const P = 'window.__pwned=';
     const evil = {
@@ -134,6 +147,9 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
     ok(await p.evaluate(() => ({}).polluted === undefined), 'no prototype pollution');
     const es = ev.sections[0];
     ok(es.icon === 'doc' && es.reminderKm === 0 && es.columns.every(c => /^[A-Za-z0-9_-]+$/.test(c.id) && c.id !== 'constructor'), 'section cleaned');
+
+    const evilPdf = await p.evaluate(async () => { const c = S.cars.find(x => x.name.includes('img')); const b = await makePdf(c, false); return b.size; });
+    ok(evilPdf > 3000, 'PDF of the crafted car still builds (' + Math.round(evilPdf / 1024) + ' KB)');
 
     /* 6. emoji survive a backup round trip (the backup is cut into cells) */
     await p.click('#quickExport'); await p.waitForTimeout(300);

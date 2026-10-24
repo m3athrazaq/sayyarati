@@ -6,13 +6,14 @@
    - كل نص يُدرج في HTML يمر عبر esc()، وكل معرّف/لون/نوع يأتي من ملف يُتحقق منه في sanitize*().
    - لا eval ولا سكربتات خارجية؛ سياسة CSP في index.html تمنع أي سكربت غير ملفات التطبيق نفسه.
    ====================================================================== */
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.2.0';
 const KEY = 'sayyarati.state.v1';
 const NATIVE_FILE = 'sayyarati-state.json';
 const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-/* integrity of vendor/exceljs.min.js — written by tools/stamp.py, checked by the browser before it runs */
-const EXCELJS_SRI = 'sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz';
+/* files loaded on demand and their integrity hashes — written by tools/stamp.py; the browser refuses
+   any file whose content does not match. The address carries part of the hash, so caches never mix versions. */
+const VENDOR = {"vendor/exceljs.min.js": "sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz", "vendor/pdf-lib.min.js": "sha384-weMABwrltA6jWR8DDe9Jp5blk+tZQh7ugpCsF3JwSA53WZM9/14PjS5LAJNHNjAI", "vendor/fontkit.umd.min.js": "sha384-2p6U+1mmqF10USehFeRiyG2ESG9FwIqN+jxULn5w9jjQIihSn9Pt13dVCn/Hawjn", "vendor/bidi.min.js": "sha384-wQtTdqzwTFhzi4xIX4wrLGvJHshKoK61RCcjZ4lwr/sZBggODJHSpl5bHBcUfeV2", "report.js": "sha384-4BZRXPnXfxilPoAVsAK0vuah9h1Dgsk/74Q7Vuq/+o5n62wM46Luvh9xouzOoIDA", "fonts/readex-report-400.ttf": "sha384-ZM9Zf46J0OTwwwL0lozkZa1qmDdWydinkx/JWuHjNv6S+0tSnrVMfJETkg5ZJl4l", "fonts/readex-report-700.ttf": "sha384-3xKwULn0RBRanuHVN8nTl+EbdhgM5YYhZQH4mk9u0MUTYD0fHrZkskxRt1gBAjVy"};
 
 /* refuse to run inside a frame (another site embedding the app) */
 if (window.top !== window.self) {
@@ -667,7 +668,9 @@ function openCarEditor(id) {
     <div class="field"><span>اللون</span><div class="swatches">${CAR_COLORS.map((k, i) => `<button class="swatch" data-ci="${i}" style="background:${k}" aria-label="لون" aria-pressed="${k === color}"></button>`).join('')}</div></div>
     ${c ? '' : tmplOpts}
     <button class="btn amber wide" id="ceSave">${c ? 'حفظ' : 'إضافة السيارة'}</button>
-    ${c ? `<button class="btn danger wide" id="ceDel" style="margin-top:10px">حذف السيارة وكل سجلاتها</button>` : ''}`, b => {
+    ${c ? `<button class="btn ghost wide" id="cePdf" style="margin-top:10px">تقرير PDF لهذه السيارة</button>
+    <button class="btn danger wide" id="ceDel" style="margin-top:10px">حذف السيارة وكل سجلاتها</button>` : ''}`, b => {
+    if (b.querySelector('#cePdf')) b.querySelector('#cePdf').onclick = () => openBackup(c.id);
     b.querySelectorAll('.swatch').forEach(s => s.onclick = () => { color = CAR_COLORS[+s.dataset.ci] || CAR_COLORS[0]; b.querySelectorAll('.swatch').forEach(x => x.setAttribute('aria-pressed', x === s)); });
     b.querySelector('#ceSave').onclick = () => {
       const name = str(b.querySelector('#ceName').value, LIMITS.label).trim(); if (!name) { toast('اكتب اسم السيارة'); return; }
@@ -879,9 +882,10 @@ function renderSettings() {
   const last = S.lastBackup ? new Date(S.lastBackup) : null;
   $('#v-settings').innerHTML = `
     <div class="sec-head"><div><h1>الإعدادات</h1></div></div>
-    <div class="block"><h2>النسخة الاحتياطية</h2>
-      <p style="margin:0 0 14px;color:var(--muted);font-size:14px">ملف إكسل منسّق بكل السيارات والأقسام، يُحفظ في الدرايف أو أي مكان من قائمة المشاركة، ويمكن استرجاعه في أي وقت.${last && !isNaN(last) ? `<br>آخر نسخة: ${dateHTML(last.toISOString().slice(0, 10))}` : ''}</p>
-      <div class="btn-row"><button class="btn amber" id="sExp">تصدير إكسل</button><button class="btn ghost" id="sImp">استيراد / استرجاع</button></div>
+    <div class="block"><h2>التصدير والنسخة الاحتياطية</h2>
+      <p style="margin:0 0 14px;color:var(--muted);font-size:14px">تقرير PDF لكل سيارة على حدة، وملف إكسل منسّق بكل السيارات والأقسام يُحفظ في الدرايف أو أي مكان من قائمة المشاركة ويمكن استرجاعه في أي وقت.${last && !isNaN(last) ? `<br>آخر نسخة احتياطية: ${dateHTML(last.toISOString().slice(0, 10))}` : ''}</p>
+      <div class="btn-row"><button class="btn amber" id="sPdf">تقرير PDF</button><button class="btn" id="sExp">تصدير إكسل</button></div>
+      <button class="btn ghost wide" id="sImp" style="margin-top:10px">استيراد / استرجاع</button>
     </div>
     <div class="block"><h2>أقسام ${esc(c.name)} وبنودها</h2>
       <div class="list">
@@ -900,7 +904,8 @@ function renderSettings() {
       <label class="field"><span>المظهر</span><select id="sTheme">${[['auto', 'حسب الجهاز'], ['light', 'فاتح'], ['dark', 'داكن']].map(([k, l]) => `<option value="${k}" ${k === S.settings.theme ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
     </div>
     <p style="text-align:center;color:var(--muted);font-size:13px;margin:22px 0">سيّارتي ${APP_VERSION} · البيانات محفوظة على هذا الجهاز فقط</p>`;
-  $('#sExp').onclick = openBackup;
+  $('#sExp').onclick = () => openBackup();
+  $('#sPdf').onclick = () => openBackup(c.id);
   $('#sImp').onclick = pickImport;
   $('#sCard').onclick = () => openCardEditor(true);
   $('#sAddSec').onclick = openAddSection;
@@ -916,13 +921,23 @@ function renderSettings() {
    Excel — export / import (ExcelJS, loaded on demand from the app itself)
    ====================================================================== */
 let excelLoading = null;
-function loadExcel() {
-  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
-  return excelLoading || (excelLoading = new Promise((res, rej) => {
-    const s = document.createElement('script'); s.src = 'vendor/exceljs.min.js'; s.integrity = EXCELJS_SRI;
-    s.onload = () => res(window.ExcelJS); s.onerror = () => { excelLoading = null; rej(new Error('تعذّر تحميل مكتبة الإكسل')); };
+const vendorUrl = path => path + '?v=' + String(VENDOR[path] || '').slice(7, 19).replace(/[^A-Za-z0-9]/g, '');
+const loaded = {};
+function loadScript(path) {
+  return loaded[path] || (loaded[path] = new Promise((res, rej) => {
+    const s = document.createElement('script'); s.src = vendorUrl(path); s.integrity = VENDOR[path];
+    s.onload = res; s.onerror = () => { delete loaded[path]; rej(new Error('تعذّر تحميل ملف من ملفات التطبيق: ' + path)); };
     document.head.appendChild(s);
   }));
+}
+async function loadBytes(path) {
+  const r = await fetch(vendorUrl(path), { integrity: VENDOR[path] });
+  if (!r.ok) throw new Error('تعذّر تحميل ملف من ملفات التطبيق: ' + path);
+  return r.arrayBuffer();
+}
+function loadExcel() {
+  if (window.ExcelJS) return Promise.resolve(window.ExcelJS);
+  return excelLoading || (excelLoading = loadScript('vendor/exceljs.min.js').then(() => window.ExcelJS).finally(() => { excelLoading = null; }));
 }
 const XL = { ink: 'FF12262E', amber: 'FFE9A23B', amberSoft: 'FFFBEBD0', zebra: 'FFF2F5F4', line: 'FFCAD5D2', white: 'FFFFFFFF', muted: 'FF62747A' };
 const thin = { style: 'thin', color: { argb: XL.line } };
@@ -1031,44 +1046,134 @@ function setCell(cell, type, v) {
   else cell.value = String(v);
 }
 
-function openBackup() {
+/* ---------- export sheet: PDF report of one car + Excel backup + restore ---------- */
+function openBackup(carId) {
   if (!S.cars.length) return;
+  let pdfCar = S.cars.find(x => x.id === carId) || car();
   const c = car();
-  openSheet('نسخة احتياطية إكسل', `
+  openSheet('تصدير ومشاركة', `
+    <div class="sub-h" style="margin-top:4px">تقرير PDF لسيارة</div>
+    <p style="margin:0 0 12px;color:var(--muted);font-size:14px">تقرير منسّق لسيارة واحدة: بطاقتها وملخص مصاريفها وكل سجلاتها، للطباعة أو لإرساله إلى مشترٍ أو ورشة.</p>
+    ${S.cars.length > 1 ? `<div class="pick" aria-label="السيارة">${S.cars.map((x, i) => `<button class="chip" data-pc="${i}" aria-pressed="${x.id === pdfCar.id}"><span class="dot" style="background:${esc(x.color)}"></span>${esc(x.name)}</button>`).join('')}</div>` : ''}
+    <label class="check"><input type="checkbox" id="pHide"> إخفاء المبالغ والأسعار (عند مشاركة التقرير مع مشترٍ مثلاً)</label>
+    <button class="btn amber wide" id="pShare">${isNative ? 'إنشاء التقرير ومشاركته' : 'إنشاء التقرير ومشاركته / حفظه'}</button>
+    ${!isNative ? `<button class="btn ghost wide" id="pDl" style="margin-top:10px">تنزيل التقرير فقط</button>` : ''}
+    <div class="sub-h">نسخة احتياطية Excel</div>
     <p style="margin:0 0 14px;color:var(--muted);font-size:14px">ستظهر قائمة المشاركة: اختر «Drive» للحفظ في جوجل درايف، أو «الملفات»، أو أرسله بالواتساب أو البريد.</p>
     ${S.cars.length > 1 ? `<div class="pick"><button class="chip" data-w="all" aria-pressed="true">كل السيارات (${S.cars.length})</button><button class="chip" data-w="one" aria-pressed="false">${esc(c.name)} فقط</button></div>` : ''}
-    <button class="btn amber wide" id="bShare">${isNative ? 'تصدير ومشاركة' : 'تصدير ومشاركة / حفظ'}</button>
+    <button class="btn wide" id="bShare">${isNative ? 'تصدير ومشاركة' : 'تصدير ومشاركة / حفظ'}</button>
     ${!isNative ? `<button class="btn ghost wide" id="bDl" style="margin-top:10px">تنزيل الملف فقط</button>` : ''}
     <div class="sub-h">الاسترجاع</div>
     <p style="margin:0 0 12px;color:var(--muted);font-size:14px">اختر ملف إكسل صدّرته من التطبيق لاسترجاع كل شيء، أو أي ملف إكسل بنفس ترتيب ملفك القديم لاستيراده كسيارة.${isNative ? ' ويمكنك أيضاً فتح الملف من تطبيق Drive أو الملفات واختيار «فتح باستخدام ← سيّارتي».' : ''}</p>
     <button class="btn ghost wide" id="bImp">استيراد / استرجاع من ملف</button>`, b => {
+    b.querySelectorAll('[data-pc]').forEach(x => x.onclick = () => { const t = S.cars[+x.dataset.pc]; if (!t) return; pdfCar = t; b.querySelectorAll('[data-pc]').forEach(y => y.setAttribute('aria-pressed', y === x)); });
     let which = 'all';
     b.querySelectorAll('[data-w]').forEach(x => x.onclick = () => { which = x.dataset.w === 'one' ? 'one' : 'all'; b.querySelectorAll('[data-w]').forEach(y => y.setAttribute('aria-pressed', y === x)); });
-    const run = async mode => {
-      const btn = b.querySelector(mode === 'dl' ? '#bDl' : '#bShare'); const old = btn.textContent; btn.textContent = 'جارٍ تجهيز الملف…'; btn.disabled = true;
-      try {
-        const cars = which === 'one' ? [c] : S.cars;
-        const wb = await buildWorkbook(cars);
-        const buf = await wb.xlsx.writeBuffer();
-        const name = `سيارتي-${which === 'one' || cars.length === 1 ? safeName(cars[0].name) + '-' : ''}${todayISO()}.xlsx`;
-        const ok = await deliver(new Blob([buf], { type: XLSX_MIME }), name, mode);
-        if (ok) { S.lastBackup = Date.now(); save(); closeSheet(); render(); toast('جُهّز ملف الإكسل'); }
-      } catch (e) { console.error(e); toast('تعذّر إنشاء الملف: ' + String((e && e.message) || e).slice(0, 120)); }
+    const busy = async (btn, work) => {
+      const old = btn.textContent; btn.textContent = 'جارٍ تجهيز الملف…'; btn.disabled = true;
+      try { await work(); } catch (e) { console.error(e); toast('تعذّر إنشاء الملف: ' + String((e && e.message) || e).slice(0, 120)); }
       btn.textContent = old; btn.disabled = false;
     };
-    b.querySelector('#bShare').onclick = () => run('share');
-    if (b.querySelector('#bDl')) b.querySelector('#bDl').onclick = () => run('dl');
+    const runPdf = mode => busy(b.querySelector(mode === 'dl' ? '#pDl' : '#pShare'), async () => {
+      const blob = await makePdf(pdfCar, b.querySelector('#pHide').checked);
+      const name = `تقرير-${safeName(pdfCar.name)}-${todayISO()}.pdf`;
+      if (await deliver(blob, name, mode, 'مشاركة التقرير')) { closeSheet(); toast('جُهّز تقرير PDF'); }
+    });
+    const runXlsx = mode => busy(b.querySelector(mode === 'dl' ? '#bDl' : '#bShare'), async () => {
+      const cars = which === 'one' ? [c] : S.cars;
+      const wb = await buildWorkbook(cars);
+      const buf = await wb.xlsx.writeBuffer();
+      const name = `سيارتي-${which === 'one' || cars.length === 1 ? safeName(cars[0].name) + '-' : ''}${todayISO()}.xlsx`;
+      if (await deliver(new Blob([buf], { type: XLSX_MIME }), name, mode, 'حفظ النسخة الاحتياطية')) { S.lastBackup = Date.now(); save(); closeSheet(); render(); toast('جُهّز ملف الإكسل'); }
+    });
+    b.querySelector('#pShare').onclick = () => runPdf('share');
+    if (b.querySelector('#pDl')) b.querySelector('#pDl').onclick = () => runPdf('dl');
+    b.querySelector('#bShare').onclick = () => runXlsx('share');
+    if (b.querySelector('#bDl')) b.querySelector('#bDl').onclick = () => runXlsx('dl');
     b.querySelector('#bImp').onclick = pickImport;
   });
+}
+
+/* ---------- PDF report ---------- */
+async function makePdf(c, hideMoney) {
+  await Promise.all(['vendor/pdf-lib.min.js', 'vendor/fontkit.umd.min.js', 'vendor/bidi.min.js', 'report.js'].map(loadScript));
+  const [regular, bold] = await Promise.all([loadBytes('fonts/readex-report-400.ttf'), loadBytes('fonts/readex-report-700.ttf')]);
+  const bytes = await window.SayyaratiReport.build(reportModel(c, hideMoney), {
+    PDFLib: window.PDFLib, fontkit: window.fontkit, bidiFactory: window.bidi_js,
+    fonts: { regular: new Uint8Array(regular), bold: new Uint8Array(bold) }
+  });
+  return new Blob([bytes], { type: 'application/pdf' });
+}
+const ltrIso = t => '⁦' + t + '⁩';
+const hexRgb = h => (COLOR_RE.test(h) ? [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)) : [0xe9, 0xa2, 0x3b]);
+/* everything the report shows, as ready-made text (report.js only lays it out) */
+function reportModel(c, hide) {
+  const moneyT = v => { const n = toNum(v); return n == null ? String(v) : `${nf(n, S.settings.decimals)} ${S.settings.currency}`; };
+  const cellText = (type, v) => {
+    if (v === '' || v == null) return '';
+    if (type === 'money') return moneyT(v);
+    if (type === 'odometer') { const n = toNum(v); return n == null ? String(v) : nf(n); }
+    if (type === 'date') return fmtDate(v);
+    return String(v).slice(0, 400);
+  };
+  const cur = currentOdo(c), rate = kmPerDay(c), driven = cur - firstOdo(c);
+  const total = c.sections.reduce((a, s) => a + sectionTotal(s), 0);
+  const sub = [];
+  const model = c.cardFields.find(f => f.label.includes('موديل') && f.value !== '');
+  if (model) sub.push('موديل ' + model.value);
+  const plate = c.cardFields.find(f => f.label.includes('لوحة') && f.value !== '');
+  if (plate) sub.push('لوحة ' + plate.value);
+
+  const summary = [{ label: 'العداد الحالي', value: `${nf(cur)} كم` }, { label: 'عدد التسجيلات', value: nf(countRows([c])) }];
+  if (!hide) {
+    summary.push({ label: 'إجمالي المصاريف', value: moneyT(total) });
+    if (driven > 0) summary.push({ label: 'تكلفة الكيلو', value: `${nf(total / driven * 1000, 1)} فلس` });
+  }
+  if (rate) summary.push({ label: 'معدل القيادة', value: `${nf(rate * 30)} كم/شهر` });
+  for (const x of reminders(c)) if (!x.none) summary.push({ label: `${x.sec.name} القادم`, value: x.left > 0 ? `عند ${nf(x.next)} كم، باقي ${nf(x.left)} كم` : `متأخر ${nf(-x.left)} كم`, accent: x.left <= 0 });
+  for (const e of expiries(c)) summary.push({ label: e.title, value: `${e.days >= 0 ? 'ينتهي' : 'انتهى'} ${fmtDate(e.date)}`, accent: e.days < 30 });
+
+  const blocks = [];
+  const card = c.cardFields.filter(f => !(hide && f.type === 'money'));
+  if (card.length) blocks.push({ type: 'kv', title: 'بطاقة السيارة', rows: card.map(f => [f.label, (f.type === 'odometer' && toNum(f.value) != null ? `${nf(f.value)} كم` : cellText(f.type, f.value)) || '—']) });
+  for (const s of c.sections) {
+    const cols = s.columns.filter(k => !(hide && k.type === 'money'));
+    const all = chrono(s), dist = distances(s);
+    const rows = all.slice(-2000);
+    const first = all.length - rows.length;
+    const t = {
+      type: 'table', title: s.name, note: [s.note, rows.length < all.length ? `آخر ${nf(rows.length)} من ${nf(all.length)}` : ''].filter(Boolean).join(' · '),
+      index: true, empty: 'لا توجد تسجيلات',
+      columns: [{ label: 'م', align: 'center' }, ...cols.map(k => ({ label: k.label, align: k.type === 'text' ? 'right' : 'center' }))],
+      rows: rows.map((r, i) => [nf(first + i + 1), ...cols.map(k => (k.type === 'distance' ? (dist.has(r.id) ? `${ltrIso('+' + nf(dist.get(r.id)))} كم` : '') : cellText(k.type, r.v[k.id])))])
+    };
+    if (!hide && rows.length && cols.some(k => k.type === 'money')) {
+      const label = Math.max(0, cols.findIndex(k => k.type === 'text'));
+      t.totals = ['', ...cols.map((k, j) => (k.type === 'money' ? moneyT(rows.reduce((a, r) => a + (toNum(r.v[k.id]) || 0), 0)) : j === label ? 'المجموع' : ''))];
+      if (cols[label] && cols[label].type === 'money') t.totals[0] = 'المجموع';
+    }
+    blocks.push(t);
+  }
+  if (!hide) {
+    const years = {};
+    for (const s of c.sections) { const d = colOf(s, 'date'); for (const k of s.columns) if (k.type === 'money') for (const r of s.rows) { const dv = d ? String(r.v[d.id] || '') : ''; const y = ISO_RE.test(dv) ? dv.slice(0, 4) : 'بدون تاريخ'; years[y] = (years[y] || 0) + (toNum(r.v[k.id]) || 0); } }
+    const ys = Object.entries(years).sort((a, b) => (/^\d/.test(b[0]) ? +b[0] : -1) - (/^\d/.test(a[0]) ? +a[0] : -1));
+    if (ys.length) blocks.push({ type: 'table', title: 'المصاريف حسب السنة', columns: [{ label: 'السنة', align: 'center' }, { label: 'المبلغ', align: 'center' }], rows: ys.map(([y, v]) => [y, moneyT(v)]), totals: ['المجموع', moneyT(total)] });
+  }
+  return {
+    fileTitle: `تقرير ${c.name}`, kicker: 'سيّارتي · تقرير السيارة', title: c.name, subtitle: sub.join('، '),
+    dateLine: `تاريخ التقرير ${fmtDate(todayISO())}`, color: hexRgb(c.color), footer: `سيّارتي — ${c.name}`,
+    notice: hide ? 'هذا التقرير لا يتضمن المبالغ والأسعار.' : '', summary, blocks
+  };
 }
 const safeName = s => String(s).replace(/[\\/:*?"<>|\u0000-\u001F\s]+/g, '-').replace(/^\.+/, '').slice(0, 40) || 'car';
 function bufToB64(buf) { let s = ''; const u = new Uint8Array(buf); for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); }
 function b64ToBuf(b64) { const s = atob(b64); const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); return u.buffer; }
-async function deliver(blob, name, mode) {
+async function deliver(blob, name, mode, dialogTitle = 'مشاركة الملف') {
   if (isNative) {
     const fs = plug('Filesystem'), sh = plug('Share');
     const w = await fs.writeFile({ path: 'exports/' + name, data: bufToB64(await blob.arrayBuffer()), directory: 'CACHE', recursive: true });
-    try { await sh.share({ title: name, dialogTitle: 'حفظ النسخة الاحتياطية', files: [w.uri] }); }
+    try { await sh.share({ title: name, dialogTitle, files: [w.uri] }); }
     catch (e) { if (/cancel/i.test(String(e && e.message))) return false; throw e; }
     return true;
   }

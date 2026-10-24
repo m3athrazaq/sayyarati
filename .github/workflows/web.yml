@@ -9,6 +9,8 @@ on:
     paths:
       - 'index.html'
       - 'app.js'
+      - 'report.js'
+      - 'fonts/**'
       - 'sw.js'
       - 'vendor/**'
       - 'tools/**'
@@ -37,7 +39,8 @@ jobs:
           python3 tools/stamp.py --check
           node --check app.js
           node --check sw.js
-          echo "7e49da68588e250dbb8bba190d2caa8ab3787cc0284bda1d8b2f805c4df742c9  vendor/exceljs.min.js" | sha256sum -c -
+          node --check report.js
+          sha256sum -c vendor/SHA256SUMS
 
       - name: Browser test
         run: |

@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  APP_VERSION: '1.1.1'
+  APP_VERSION: '1.2.0'
 
 jobs:
   emulator-test:
@@ -67,7 +67,7 @@ jobs:
         run: |
           python3 tools/stamp.py --check
           rm -rf native/www && mkdir -p native/www
-          cp -R index.html app.js manifest.webmanifest *.png vendor fonts native/www/
+          cp -R index.html app.js report.js manifest.webmanifest *.png vendor fonts native/www/
           cp native/selftest/selftest.js native/selftest/fixture-f150-layout.xlsx native/www/
           python3 - <<'PY'
           import pathlib
