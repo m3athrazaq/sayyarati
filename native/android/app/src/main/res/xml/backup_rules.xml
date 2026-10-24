@@ -5,4 +5,6 @@
      records. Photos are kept in the Excel backup instead. -->
 <full-backup-content>
     <exclude domain="file" path="photos/" />
+    <!-- the full-size picture a camera app wrote for "Take a photo" (deleted a minute later anyway) -->
+    <exclude domain="external" path="Pictures/" />
 </full-backup-content>

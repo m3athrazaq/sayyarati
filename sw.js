@@ -1,6 +1,6 @@
 /* سيّارتي — service worker: keeps the web version working offline.
    Only the app's own files are cached; nothing is ever sent anywhere. */
-const APPV = '0ac370b2cf6d';
+const APPV = 'c23624f5659a';
 const VERSION = 'sayyarati-v' + APPV;
 /* files the app loads on demand (Excel and PDF), with the version in their address — written by tools/stamp.py */
 const LAZY = ["./vendor/exceljs.min.js?v=Pqp51FUN2qz", "./vendor/pdf-lib.min.js?v=weMABwrltA6j", "./vendor/fontkit.umd.min.js?v=2p6U1mmqF10", "./vendor/bidi.min.js?v=wQtTdqzwTFhz", "./report.js?v=PbMBZxGmhPVv", "./fonts/readex-report-400.ttf?v=ZM9Zf46J0OTw", "./fonts/readex-report-700.ttf?v=3xKwULn0RBRa"];

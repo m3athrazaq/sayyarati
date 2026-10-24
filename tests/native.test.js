@@ -53,7 +53,7 @@ function fakeCapacitor() {
   for (const m of ['writeFile', 'appendFile', 'readFile', 'deleteFile', 'readdir', 'getUri']) {
     fsm[m] = async o => { try { return await window.__fs(m, JSON.parse(JSON.stringify(o))); } catch (e) { throw new Error(String(e.message || e).replace(/^Error: /, '')); } };
   }
-  const ln = { perm: 'prompt', pending: [], scheduled: [], channels: [] };
+  const ln = { perm: 'prompt', exact: 'denied', pending: [], scheduled: [], channels: [] };
   window.__ln = ln; window.__listeners = listeners; window.__shared = [];
   window.Capacitor = {
     isNativePlatform: () => true,
@@ -73,6 +73,7 @@ function fakeCapacitor() {
       LocalNotifications: {
         addListener: on('LN'),
         checkPermissions: async () => ({ display: ln.perm }),
+        checkExactNotificationSetting: async () => ({ exact_alarm: ln.exact }),
         requestPermissions: async () => { ln.perm = 'granted'; return { display: ln.perm }; },
         createChannel: async o => { ln.channels.push(o); },
         getPending: async () => ({ notifications: ln.pending.map(n => ({ id: n.id })) }),
@@ -125,6 +126,11 @@ function fakeCapacitor() {
     ok(n.perm === 'granted' && n.pending.length >= 1 && !(await p.isVisible('#hNotifyOn')), `notifications scheduled after permission (${n.pending.length})`);
     ok(n.pending.every(x => Number.isInteger(x.id) && x.id > 0 && x.id < 2 ** 31 && x.channelId === 'reminders' && x.smallIcon === 'ic_stat_sayyarati' && x.isExactNotification === false && x.schedule.allowWhileIdle === true && typeof x.extra.car === 'string')
       && at.every(a => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(a) && Date.parse(a) > Date.now()), 'each notification: valid id, channel, icon, inexact alarm, future time');
+    /* Android 11 and older: exact alarms (they need no permission there) */
+    await p.evaluate(async () => { window.__ln.exact = 'granted'; await syncNotifications(true); });
+    ok((await ln()).pending.every(x => x.isExactNotification === true), 'exact alarms where Android allows them without a permission');
+    await p.evaluate(async () => { window.__ln.exact = 'denied'; await syncNotifications(true); });
+    n = await ln();
     /* saving the same data again does not reschedule */
     const before = n.scheduled.length;
     await p.evaluate(() => { save(); }); await p.waitForTimeout(2200);

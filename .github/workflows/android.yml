@@ -113,6 +113,7 @@ jobs:
           if grep -q "android.permission.INTERNET" perms.txt; then echo "::error::The app must not have internet access"; exit 1; fi
           # only the permissions the reminders need (notifications, restoring them after a restart); anything else fails
           ALLOWED='POST_NOTIFICATIONS|RECEIVE_BOOT_COMPLETED|WAKE_LOCK|com\.m3athrazaq\.sayyarati\.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION'
+          grep -qE "^uses-permission.*POST_NOTIFICATIONS" perms.txt || { echo "::error::Could not read the APK's permissions"; exit 1; }
           EXTRA=$(grep -E "^uses-permission" perms.txt | grep -vE "name='?(android\.permission\.)?($ALLOWED)'?( |$)" || true)
           if [ -n "$EXTRA" ]; then echo "::error::Unexpected permission(s): $EXTRA"; exit 1; fi
           if "$BT/aapt2" dump xmltree "$APK" --file AndroidManifest.xml | grep -q 'android:debuggable.*0xffffffff'; then echo "::error::Release APK must not be debuggable"; exit 1; fi

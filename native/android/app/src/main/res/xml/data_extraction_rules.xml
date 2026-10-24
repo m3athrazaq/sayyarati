@@ -4,5 +4,7 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="file" path="photos/" />
+        <!-- the full-size picture a camera app wrote for "Take a photo" (deleted a minute later anyway) -->
+        <exclude domain="external" path="Pictures/" />
     </cloud-backup>
 </data-extraction-rules>

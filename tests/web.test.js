@@ -132,6 +132,15 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
         ins: [{ id: 'i1', v: { desc: 'تأمين 2025', exp: iso(-300) } }, { id: 'i2', v: { desc: 'تأمين شامل 2026', exp: iso(65) } },
               { id: 'i3', v: { desc: 'تجديد الدفتر', exp: iso(12) } }, { id: 'i4', v: { desc: 'فحص قديم', exp: iso(-90) } }] });
       out.exp = expiries(c).map(e => e.title + ':' + e.days).join('|');
+      /* overdue by an undated reading: due today at the latest, never months ahead */
+      c = sanitizeCar({ id: 'tc', name: 'T', cardFields: [], sections: [
+        { id: 'oil', name: 'الزيوت', reminderKm: 5000, columns: [{ id: 'odo', label: 'العداد', type: 'odometer' }, { id: 'date', label: 'التاريخ', type: 'date' }], rows: [{ id: 'a', v: { odo: 10000, date: iso(-60) } }, { id: 'b', v: { odo: 11000, date: iso(-30) } }] },
+        { id: 'fuel', name: 'الوقود', columns: [{ id: 'o', label: 'العداد', type: 'odometer' }], rows: [{ id: 'f', v: { o: 16500 } }] }] }, new Set());
+      x = reminders(c)[0];
+      out.undated = x.late && x.due <= todayISO();
+      /* dates that do not exist stay text; an item named «تاريخ التجديد» is not an expiry and is filled with today */
+      out.badDate = cleanValue('date', '31.02.2027') === '31.02.2027' && cleanValue('date', '2027-02-31') === '31.02.2027' && cleanValue('date', '29.02.2028') === '2028-02-29';
+      out.renew = !EXPIRY_RE.test('تاريخ التجديد') && EXPIRY_RE.test('تاريخ الانتهاء');
       /* a section saved before 1.3 (no time interval): oil gets 6 months, an explicit 0 stays 0 */
       const old = sanitizeSection({ id: 'oil', name: 'الزيوت', reminderKm: 7500, columns: [{ id: 'd', label: 'التاريخ', type: 'date' }], rows: [] }, new Set());
       const off = sanitizeSection({ id: 'oil', name: 'الزيوت', reminderKm: 7500, reminderMonths: 0, columns: [], rows: [] }, new Set());
@@ -145,6 +154,8 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
     ok(rem.late, 'overdue reminder');
     ok(rem.exp === 'تجديد الدفتر:12|انتهاء رخصة القيادة:40|تأمين شامل 2026:65', 'expiry dates grouped by what they are (' + rem.exp + ')');
     ok(rem.migrate, 'older oil sections get "every 6 months"; an explicit 0 is kept');
+    ok(rem.undated, 'overdue by an undated reading: due now, not months ahead');
+    ok(rem.badDate && rem.renew, 'impossible dates stay text; «تجديد» items are not taken for expiry dates');
 
     /* 4d. phone notifications plan (Android) and the calendar file (iPhone / web) */
     const plan = await p.evaluate(() => {
@@ -156,14 +167,14 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
         const a = planAlerts(), b = planAlerts();
         const ids = a.map(x => x.id);
         const nine = a.every(x => new Date(x.at).getHours() === 9 && new Date(x.at).getMinutes() === 0);
-        const odo = a.find(x => x.key.endsWith(':odo'));
+        const odo = a.find(x => x.key.includes(':odo:'));
         const ics = buildIcs(S.cars);
         const lines = ics.text.split('\r\n');
         const enc = new TextEncoder();
         return {
           n: a.length, same: JSON.stringify(a) === JSON.stringify(b), future: a.every(x => x.at > Date.now()), nine,
           ids: ids.every(i => Number.isInteger(i) && i > 0 && i < 2 ** 31) && new Set(ids).size === ids.length,
-          kinds: a.map(x => x.key.split(':').pop()).sort().join(','),
+          kinds: a.map(x => (x.key.includes(':odo:') ? 'odo' : x.key.split(':').pop())).sort().join(','),
           odo: odo ? Math.round(daysBetween(addDaysISO(todayISO(), -40), new Date(odo.at - new Date(odo.at).getTimezoneOffset() * 6e4).toISOString().slice(0, 10))) : -1,
           icsCount: ics.count, crlf: !/[^\r]\n/.test(ics.text), short: lines.every(l => enc.encode(l).length <= 75),
           unfold: ics.text.replace(/\r\n /g, ''), alarms: (ics.text.match(/BEGIN:VALARM/g) || []).length
@@ -350,14 +361,16 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
       wb.addWorksheet('x').getCell('A1').value = 'visible';
       const m = wb.addWorksheet('_sayyarati_photos', { state: 'veryHidden' });
       m.getCell(1, 1).value = 'sayyarati-photos-v1';
-      [['okphoto', jpg], ['constructor', jpg], ['pngphoto', png], ['okphoto', jpg], ['bad id!', jpg]].forEach(([id, u8], i) => {
+      const big = document.createElement('canvas'); big.width = 4200; big.height = 8;
+      const huge = new Uint8Array(await (await new Promise(r => big.toBlob(r, 'image/jpeg', 0.5))).arrayBuffer());
+      [['okphoto', jpg], ['constructor', jpg], ['pngphoto', png], ['okphoto', jpg], ['bad id!', jpg], ['hugephoto', huge]].forEach(([id, u8], i) => {
         const im = wb.addImage({ buffer: u8.buffer, extension: id === 'pngphoto' ? 'png' : 'jpeg' });
         m.getCell(i + 2, 1).value = id; m.addImage(im, { tl: { col: 1, row: i + 1 }, ext: { width: 4, height: 4 } });
       });
       const h = wb.addWorksheet('_sayyarati', { state: 'veryHidden' });
       h.getCell(1, 1).value = 'sayyarati-backup-v1';
       h.getCell(2, 1).value = JSON.stringify({ app: 'sayyarati', cars: [{ id: 'cc', name: 'crafted', cardFields: [], sections: [{ id: 's', name: 's', columns: [{ id: 'd', label: 'بيان', type: 'text' }],
-        rows: [{ id: 'r1', v: { d: 'x' }, p: ['okphoto', 'constructor', 'pngphoto', 'missing1', '<img src=x>', 'okphoto'] }] }] }] });
+        rows: [{ id: 'r1', v: { d: 'x' }, p: ['okphoto', 'constructor', 'pngphoto', 'missing1', '<img src=x>', 'okphoto', 'hugephoto'] }] }] }] });
       const buf = await wb.xlsx.writeBuffer();
       await importBuffer(buf, 'crafted.xlsx');
       return true;
@@ -365,7 +378,7 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
     await q.waitForTimeout(500);
     if (crafted && await q.isVisible('#rMerge')) { await q.click('#rMerge'); await q.waitForTimeout(2000); }
     const cr = await q.evaluate(async () => { const c = S.cars.find(x => x.id === 'cc'); return { p: c && c.sections[0].rows[0].p, stored: (await Photos.list()).map(x => x.id).sort() }; });
-    ok(JSON.stringify(cr.p) === '["okphoto"]' && cr.stored.includes('okphoto') && !cr.stored.includes('pngphoto') && !cr.stored.includes('constructor'), 'crafted photo backup cleaned (' + JSON.stringify(cr) + ')');
+    ok(JSON.stringify(cr.p) === '["okphoto"]' && cr.stored.includes('okphoto') && !cr.stored.includes('pngphoto') && !cr.stored.includes('constructor') && !cr.stored.includes('hugephoto'), 'crafted photo backup cleaned (' + JSON.stringify(cr) + ')');
 
     /* 12. photos no entry uses are cleaned up (only once they are hours old) */
     const gc = await q.evaluate(async () => {
@@ -378,6 +391,19 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
       return (await Photos.list()).map(x => x.id).sort().join(',');
     });
     ok(gc.includes('okphoto') && gc.includes('orphannew') && !gc.includes('orphanold'), 'unused photos removed once old (' + gc + ')');
+
+    /* 12b. the cleanup and a restore at the same moment: the restore keeps the photos it brings */
+    const race = await q.evaluate(async () => {
+      const blob = await Photos.blob('okphoto');
+      await Photos.put(blob, 'racephoto');
+      const db = await new Promise(r => { const o = indexedDB.open('sayyarati-photos', 1); o.onsuccess = () => r(o.result); });
+      await new Promise(r => { const t = db.transaction('photos', 'readwrite'); const st = t.objectStore('photos'); st.get('racephoto').onsuccess = e => { const v = e.target.result; v.t = Date.now() - 3 * 864e5; st.put(v); }; t.oncomplete = r; });
+      localStorage.removeItem('sayyarati.photoGC');
+      const restored = sanitizeCars([{ id: 'rc', name: 'restored', cardFields: [], sections: [{ id: 's', name: 's', columns: [{ id: 'd', label: 'بيان', type: 'text' }], rows: [{ id: 'r', v: { d: 'x' }, p: ['racephoto'] }] }] }]);
+      await Promise.all([gcPhotos(), finishRestore(restored, S.settings, new Map([['racephoto', new Uint8Array(await blob.arrayBuffer())]]), restored)]);
+      return { refs: (S.cars[0].sections[0].rows[0].p || []).join(), kept: !!(await Photos.blob('racephoto')) };
+    });
+    ok(race.refs === 'racephoto' && race.kept, 'cleanup running during a restore leaves its photos alone (' + JSON.stringify(race) + ')');
 
     /* 13. iPhone "add to calendar": the service worker serves the calendar file the page made */
     await q.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 15000 }).catch(() => {});

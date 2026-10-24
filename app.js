@@ -141,7 +141,8 @@ function cleanValue(type, v) {
     if (typeof v === 'number') return isFinite(v) ? v : '';
     const n = toNum(v); return n == null ? str(v, 100) : n;
   }
-  if (type === 'date') return parseDateAny(v) || str(v, 40);
+  /* a date that does not exist (31.02.2027) stays as text, never as a date the reminders would use */
+  if (type === 'date') { const iso = parseDateAny(v); if (iso) return iso; const t = str(v, 40); return ISO_RE.test(t) ? fmtDate(t) : t; }
   if (type === 'distance') return '';
   return str(v, LIMITS.text);
 }
@@ -287,7 +288,12 @@ function fmtDate(v) {
 }
 const dateHTML = v => `<span class="num">${esc(fmtDate(v))}</span>`;
 function todayISO() { const d = new Date(); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); }
-function isoOk(y, m, d) { return y >= 1900 && y <= 2200 && m >= 1 && m <= 12 && d >= 1 && d <= 31; }
+/* a real calendar day (no 31 February) */
+function isoOk(y, m, d) {
+  if (!(y >= 1900 && y <= 2200 && m >= 1 && m <= 12 && d >= 1 && d <= 31)) return false;
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
 function parseDateAny(v) {
   if (v == null || v === '') return '';
   if (v instanceof Date) return isNaN(v) ? '' : v.toISOString().slice(0, 10);
@@ -415,6 +421,8 @@ function reminders(c) {
       if (lastOdo != null) {
         const next = lastOdo + s.reminderKm, used = Math.max(0, cur - lastOdo);
         kmP = { lastOdo, next, used, left: next - cur, ratio: used / s.reminderKm, eta: etaFor(c, next, rate) };
+        /* already reached (perhaps by an undated reading): it fell due today at the latest */
+        if (kmP.left <= 0 && kmP.eta && kmP.eta > today) kmP.eta = today;
       }
     }
     if (useTime) {
@@ -457,7 +465,7 @@ function svcWhen(x) {
 /* expiry reminders (insurance, registration…): date items whose name says they expire, in the car card
    and in the sections. Entries are grouped by what they are, so a section holding both the insurance and
    the registration reminds of each; anything that expired more than 60 days ago is no longer shown. */
-const EXPIRY_RE = /انتهاء|ينتهي|صلاحية|تجديد|expir|renew/i;
+const EXPIRY_RE = /انتهاء|ينتهي|صلاحية|expir/i;
 function expiryGroup(title) {
   const t = norm(title);
   if (/تأمين|تامين|insurance/.test(t)) return 'ins';
@@ -796,7 +804,7 @@ function renderEntry() {
   if (!s) fields = `<div class="empty"><b>لا توجد أقسام لهذه السيارة</b>أضف قسماً من الإعدادات.</div>`;
   else {
     s.columns.forEach((col, ci) => {
-      if (!editing && col.type === 'date' && !has(draft.v, col.id) && !/انتهاء|ينتهي|صلاحية/.test(col.label)) draft.v[col.id] = todayISO();
+      if (!editing && col.type === 'date' && !has(draft.v, col.id) && !EXPIRY_RE.test(col.label)) draft.v[col.id] = todayISO();
       const v = has(draft.v, col.id) ? draft.v[col.id] : '';
       if (col.type === 'distance') { fields += `<div class="field"><span>${esc(col.label)}</span><div class="calc" id="calcDist">—</div></div>`; return; }
       const attrs = { text: 'type="text"', number: 'type="text" inputmode="decimal"', money: 'type="text" inputmode="decimal"', odometer: 'type="text" inputmode="numeric"', date: 'type="date"' }[col.type] || 'type="text"';
@@ -1247,7 +1255,7 @@ function planAlerts(now = Date.now()) {
     if (N > 0 && last && c.sections.some(s => s.reminderKm > 0 && colOf(s, 'odometer'))) {
       let k = 1, d = addDaysISO(last.date, N);
       while (alertAt(d) <= now + 60e3 && k < 400) d = addDaysISO(last.date, N * ++k);
-      push(`${c.id}:odo`, d, `حدّث قراءة العداد — ${c.name}`, `آخر قراءة مسجّلة كانت قبل ${nDays(N * k)}. تحديثها يُبقي مواعيد الزيت دقيقة.`, c.id);
+      push(`${c.id}:odo:${d}`, d, `حدّث قراءة العداد — ${c.name}`, `آخر قراءة مسجّلة كانت قبل ${nDays(N * k)}. تحديثها يُبقي مواعيد الزيت دقيقة.`, c.id);
     }
   }
   out.sort((a, b) => a.at - b.at);
@@ -1272,6 +1280,11 @@ async function runNotifSync(force) {
   const list = S.settings.notify && notifPerm === 'granted' ? planAlerts() : [];
   const sig = JSON.stringify(list.map(a => [a.id, a.at, a.title, a.body]));
   if (sig === notifSig && !force) return;
+  /* Android 11 and older may deliver a far-off inexact alarm weeks late, but there exact alarms need no
+     permission ("granted"); Android 12+ keeps inexact alarms within the hour, and the app does not ask for
+     the exact-alarm permission there ("denied", so nothing is ever requested) */
+  let exact = false;
+  try { exact = list.length > 0 && (await ln.checkExactNotificationSetting()).exact_alarm === 'granted'; } catch (e) { exact = false; }
   try {
     const pend = await ln.getPending();
     const old = ((pend && pend.notifications) || []).map(n => ({ id: n.id }));
@@ -1279,7 +1292,7 @@ async function runNotifSync(force) {
     if (list.length) await ln.schedule({ notifications: list.map(a => ({
       id: a.id, title: a.title, body: a.body, largeBody: a.body, channelId: 'reminders',
       smallIcon: 'ic_stat_sayyarati', iconColor: '#E9A23B',
-      schedule: { at: new Date(a.at), allowWhileIdle: true }, isExactNotification: false,
+      schedule: { at: new Date(a.at), allowWhileIdle: true }, isExactNotification: exact,
       extra: { car: a.carId }
     })) });
     notifSig = sig;
@@ -1342,7 +1355,7 @@ function buildIcs(cars) {
   const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Sayyarati//Car log//AR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:' + icsText('سيّارتي')];
   let count = 0;
   for (const c of cars) for (const it of dueItems(c)) {
-    if (!it.date || it.date < today) continue;
+    if (!it.date || it.date < today || (it.type === 'svc' && it.x.late)) continue;   /* only dates still ahead */
     let summary, desc, alarms;
     if (it.type === 'svc') {
       summary = `موعد ${it.x.sec.name} — ${c.name}`;
@@ -1425,10 +1438,28 @@ function jpegSize(u8) {
   }
   return null;
 }
+/* width and height from a PNG header */
+function pngSize(u8) {
+  if (!(u8 && u8.length >= 24 && u8[0] === 0x89 && u8[1] === 0x50 && u8[2] === 0x4E && u8[3] === 0x47)) return null;
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const w = dv.getUint32(16), h = dv.getUint32(20);
+  return w > 0 && h > 0 ? { w, h } : null;
+}
 async function decodeImage(blob) {
   if (window.createImageBitmap) {
-    try { const b = await createImageBitmap(blob, { imageOrientation: 'from-image' }); return { src: b, w: b.width, h: b.height, done: () => b.close && b.close() }; }
-    catch (e) { /* older browsers: through an <img> */ }
+    /* a very large camera picture is decoded at a smaller size straight away (a 50–200 MP photo would
+       otherwise need hundreds of MB). Only the width is given, from the short side, so whether or not the
+       camera turned the picture, nothing is stretched and the result is still ≥ 1600 px on its long side. */
+    const tries = [{ imageOrientation: 'from-image' }];
+    try {
+      const head = new Uint8Array(await blob.slice(0, 512 * 1024).arrayBuffer());
+      const sz = jpegSize(head) || pngSize(head);
+      if (sz && sz.w * sz.h > 16e6) tries.unshift({ imageOrientation: 'from-image', resizeQuality: 'high', resizeWidth: Math.max(1, Math.round(Math.min(sz.w, sz.h) * 2800 / Math.max(sz.w, sz.h))) });
+    } catch (e) { /* unknown format: decoded as it is */ }
+    for (const o of tries) {
+      try { const b = await createImageBitmap(blob, o); return { src: b, w: b.width, h: b.height, done: () => b.close && b.close() }; }
+      catch (e) { /* next way */ }
+    }
   }
   const url = URL.createObjectURL(blob);
   try {
@@ -1528,15 +1559,23 @@ const Photos = (() => {
 })();
 const releaseUrls = () => Photos.release();
 const usedPhotoIds = (cars = S.cars) => { const u = new Set(); for (const c of cars) for (const s of c.sections) for (const r of s.rows) for (const id of r.p || []) u.add(id); return u; };
+/* the cleanup and a restore never run at the same time (the cleanup would see the data before the restore) */
+let photoQueue = Promise.resolve();
+function photoTask(fn) { const run = photoQueue.then(() => fn()); photoQueue = run.catch(() => {}); return run; }
 /* photos no entry uses any more (entry deleted, photo removed, restore replaced the data) */
-async function gcPhotos() {
-  try {
-    const last = Number(localStorage.getItem('sayyarati.photoGC')) || 0;
-    if (Date.now() - last < 864e5) return;
-    const used = usedPhotoIds();
-    for (const p of await Photos.list()) if (!used.has(p.id) && Date.now() - p.t > 6 * 3600e3) await Photos.del(p.id);
-    localStorage.setItem('sayyarati.photoGC', String(Date.now()));
-  } catch (e) { console.warn('photo cleanup', e); }
+function gcPhotos() {
+  return photoTask(async () => {
+    try {
+      const last = Number(localStorage.getItem('sayyarati.photoGC')) || 0;
+      if (restoring || Date.now() - last < 864e5) return;
+      const used = usedPhotoIds();
+      for (const p of await Photos.list()) {
+        if (restoring) return;
+        if (!used.has(p.id) && Date.now() - p.t > 6 * 3600e3) await Photos.del(p.id);
+      }
+      localStorage.setItem('sayyarati.photoGC', String(Date.now()));
+    } catch (e) { console.warn('photo cleanup', e); }
+  });
 }
 /* photos of one car (or all), oldest entry first: [{id, c, s, r}] */
 function photoItems(cars) {
@@ -1771,9 +1810,11 @@ async function addPhotoSheets(wb, cars, used, font) {
   gal.pageSetup = { orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 };
   return n;
 }
-/* the photos stored in a backup file: id → JPEG bytes (each checked; anything else is skipped) */
+/* the photos stored in a backup file: id → JPEG bytes. Each one is checked (a real JPEG no larger than the
+   app ever makes); anything else is skipped, and past the limit the rest are left out (out.skipped) */
 function readBackupPhotos(wb) {
   const out = new Map();
+  out.skipped = 0;
   const ws = wb.getWorksheet('_sayyarati_photos');
   if (!ws || !String(cellVal(ws.getCell(1, 1))).startsWith('sayyarati-photos')) return out;
   for (const im of ws.getImages()) {
@@ -1781,12 +1822,13 @@ function readBackupPhotos(wb) {
     if (!(row >= 2)) continue;
     const id = String(cellVal(ws.getCell(row, 1)) || '');
     if (!ID_RE.test(id) || id in Object.prototype || out.has(id)) continue;
+    if (out.size >= LIMITS.photos) { out.skipped++; continue; }
     const media = wb.getImage(im.imageId);
     if (!media || !media.buffer || !(media.buffer.length <= LIMITS.photoBytes)) continue;
     const u8 = media.buffer instanceof Uint8Array ? media.buffer : new Uint8Array(media.buffer);
-    if (!jpegSize(u8)) continue;
+    const sz = jpegSize(u8);
+    if (!sz || sz.w > 4096 || sz.h > 4096) continue;
     out.set(id, u8);
-    if (out.size > LIMITS.photos) throw new ImportError('too-many');
   }
   return out;
 }
@@ -1819,12 +1861,13 @@ function openBackup(carId) {
     <p style="margin:0 0 14px;color:var(--muted);font-size:14px">ستظهر قائمة المشاركة: اختر «Drive» للحفظ في جوجل درايف، أو «الملفات»، أو أرسله بالواتساب أو البريد.</p>
     ${S.cars.length > 1 ? `<div class="pick"><button class="chip" data-w="all" aria-pressed="true">كل السيارات (${S.cars.length})</button><button class="chip" data-w="one" aria-pressed="false">${esc(c.name)} فقط</button></div>` : ''}
     <label class="check" id="bPhWrap"><input type="checkbox" id="bPhotos" checked> مع صور الفواتير (<span id="bPhN"></span>)</label>
+    <p class="hint-p warn-t hidden" id="bWarn"></p>
     <button class="btn wide" id="bShare">${isNative ? 'تصدير ومشاركة' : 'تصدير ومشاركة / حفظ'}</button>
     ${!isNative ? `<button class="btn ghost wide" id="bDl" style="margin-top:10px">تنزيل الملف فقط</button>` : ''}
     <div class="sub-h">الاسترجاع</div>
     <p style="margin:0 0 12px;color:var(--muted);font-size:14px">اختر ملف إكسل صدّرته من التطبيق لاسترجاع كل شيء، أو أي ملف إكسل بنفس ترتيب ملفك القديم لاستيراده كسيارة.${isNative ? ' ويمكنك أيضاً فتح الملف من تطبيق Drive أو الملفات واختيار «فتح باستخدام ← سيّارتي».' : ''}</p>
     <button class="btn ghost wide" id="bImp">استيراد / استرجاع من ملف</button>`, b => {
-    let which = 'all', sizes = null;
+    let which = 'all', sizes = null, tooBig = false;
     const xlCars = () => (which === 'one' ? [c] : S.cars);
     /* how many photos each choice carries (and roughly how big the backup gets) */
     const counts = () => {
@@ -1835,9 +1878,15 @@ function openBackup(carId) {
       b.querySelector('#bPhWrap').classList.toggle('hidden', !ids.length);
       const bytes = sizes ? ids.reduce((a, id) => a + (sizes.get(id) || 0), 0) : 0;
       b.querySelector('#bPhN').textContent = `${nPhotos(ids.length)}${bytes ? '، نحو ' + mb(bytes) : ''}`;
+      /* a backup the app could not read back is never made: too many photos for one file */
+      tooBig = ids.length > LIMITS.photos || bytes > EXPORT_PHOTO_BYTES;
+      const w = b.querySelector('#bWarn');
+      w.textContent = tooBig ? `الصور كثيرة على ملف واحد (${mb(bytes)}). صدّر كل سيارة على حدة، أو ألغِ «مع صور الفواتير» واحتفظ بالصور في نسخة لكل سيارة.` : '';
+      w.classList.toggle('hidden', !(tooBig && b.querySelector('#bPhotos').checked));
     };
     counts();
     Photos.list().then(l => { sizes = new Map(l.map(x => [x.id, x.size])); if (b.isConnected) counts(); }).catch(() => {});
+    b.querySelector('#bPhotos').onchange = counts;
     b.querySelectorAll('[data-pc]').forEach(x => x.onclick = () => { const t = S.cars[+x.dataset.pc]; if (!t) return; pdfCar = t; b.querySelectorAll('[data-pc]').forEach(y => y.setAttribute('aria-pressed', y === x)); counts(); });
     b.querySelectorAll('[data-w]').forEach(x => x.onclick = () => { which = x.dataset.w === 'one' ? 'one' : 'all'; b.querySelectorAll('[data-w]').forEach(y => y.setAttribute('aria-pressed', y === x)); counts(); });
     /* invoices show prices: hiding the amounts also leaves the photos out, unless chosen again */
@@ -1856,9 +1905,12 @@ function openBackup(carId) {
     const runXlsx = mode => busy(b.querySelector(mode === 'dl' ? '#bDl' : '#bShare'), async () => {
       const cars = xlCars();
       const withPhotos = !b.querySelector('#bPhWrap').classList.contains('hidden') && b.querySelector('#bPhotos').checked;
+      if (withPhotos && !sizes) { sizes = new Map((await Photos.list()).map(x => [x.id, x.size])); counts(); }
+      if (withPhotos && tooBig) { toast('الصور كثيرة على ملف واحد: صدّر كل سيارة على حدة أو بلا صور'); b.querySelector('#bWarn').scrollIntoView({ block: 'center' }); return; }
       const wb = await buildWorkbook(cars, withPhotos);
       /* photos are already compressed: zip them lightly, it is much faster on a phone */
       const buf = await wb.xlsx.writeBuffer({ zip: { compressionOptions: { level: withPhotos ? 1 : 6 } } });
+      if (buf.byteLength > MAX_IMPORT_BYTES) { toast('الملف أكبر من أن يُسترجع (150 ميجابايت): صدّر كل سيارة على حدة أو بلا صور'); return; }
       const name = `سيارتي-${which === 'one' || cars.length === 1 ? safeName(cars[0].name) + '-' : ''}${todayISO()}.xlsx`;
       if (await deliver(new Blob([buf], { type: XLSX_MIME }), name, mode, 'حفظ النسخة الاحتياطية')) { S.lastBackup = Date.now(); save(); closeSheet(); render(); toast('جُهّز ملف الإكسل'); }
     });
@@ -1872,6 +1924,8 @@ function openBackup(carId) {
 
 /* ---------- PDF report ---------- */
 const PDF_PHOTOS = 300;
+/* photos in one backup file: well under what the app can read back (MAX_IMPORT_BYTES) and what a phone can hold */
+const EXPORT_PHOTO_BYTES = 100 * 1024 * 1024;
 async function makePdf(c, hideMoney, withPhotos) {
   await Promise.all(['vendor/pdf-lib.min.js', 'vendor/fontkit.umd.min.js', 'vendor/bidi.min.js', 'report.js'].map(loadScript));
   const [regular, bold] = await Promise.all([loadBytes('fonts/readex-report-400.ttf'), loadBytes('fonts/readex-report-700.ttf')]);
@@ -1980,16 +2034,19 @@ async function deliver(blob, name, mode, dialogTitle = 'مشاركة الملف'
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
   return true;
 }
-/* exported files stay in the app's cache only as long as the share needs them */
+/* exported files stay in the app's cache only as long as the share needs them; an import copy left behind
+   (the app closed while reading it) goes too */
 async function cleanOldExports() {
   const fs = plug('Filesystem'); if (!fs) return;
-  try {
-    const r = await fs.readdir({ path: 'exports', directory: 'CACHE' });
-    for (const f of r.files || []) {
-      const name = typeof f === 'string' ? f : f.name; const mtime = typeof f === 'string' ? 0 : Number(f.mtime) || 0;
-      if (name && Date.now() - mtime > 864e5) await fs.deleteFile({ path: 'exports/' + name, directory: 'CACHE' }).catch(() => {});
-    }
-  } catch (e) { /* no exports yet */ }
+  for (const [dir, age] of [['exports', 864e5], ['imports', 6e5]]) {
+    try {
+      const r = await fs.readdir({ path: dir, directory: 'CACHE' });
+      for (const f of r.files || []) {
+        const name = typeof f === 'string' ? f : f.name; const mtime = typeof f === 'string' ? 0 : Number(f.mtime) || 0;
+        if (name && Date.now() - mtime > age) await fs.deleteFile({ path: dir + '/' + name, directory: 'CACHE' }).catch(() => {});
+      }
+    } catch (e) { /* nothing there yet */ }
+  }
 }
 
 /* ---------- import ---------- */
@@ -2047,7 +2104,7 @@ function showImportError(e) {
   const kind = e instanceof ImportError ? e.kind : 'other';
   const detail = e instanceof ImportError ? e.detail : String((e && e.message) || e || '');
   const msgs = {
-    'too-large': 'الملف أكبر من 150 ميجابايت، وهذا أكبر من أي نسخة احتياطية للتطبيق. تأكد أنك اخترت الملف الصحيح.',
+    'too-large': 'الملف أكبر من 150 ميجابايت، أكبر مما يستطيع التطبيق قراءته. تأكد أنك اخترت الملف الصحيح؛ وإن كان نسخة فيها صور كثيرة فصدّرها مرة أخرى لكل سيارة على حدة أو بلا صور.',
     'unreadable': 'لم يتمكن الهاتف من قراءة الملف من مكانه. يحدث هذا أحياناً مع ملفات الدرايف التي لم تُنزَّل بعد. جرّب أحد الحلين: افتح تطبيق Drive، واضغط ⋮ بجانب الملف ثم «فتح باستخدام» ← «سيّارتي»، أو نزّل الملف إلى الهاتف ثم اختره من «التنزيلات».',
     'not-xlsx': 'هذا الملف ليس بصيغة Excel الحديثة (‎.xlsx‎). إن كان بصيغة ‎.xls‎ القديمة أو جدول Google Sheets، افتحه واحفظه أو نزّله بصيغة ‎.xlsx‎ ثم استورده.',
     'sheets-export': 'هذا جدول Google Sheets ولم يسمح الدرايف بتحويله تلقائياً. افتحه في Google Sheets واختر «تنزيل ← Microsoft Excel (‎.xlsx‎)» ثم استورد الملف الناتج.',
@@ -2118,6 +2175,7 @@ function askRestore(raw, photos = new Map()) {
   if (n > LIMITS.totalRows) throw new ImportError('too-many');
   const inFile = [...usedPhotoIds(cars)].filter(id => photos.has(id)).length;
   openSheet('استرجاع نسخة احتياطية', `<p style="margin:0 0 16px">${when ? `النسخة بتاريخ ${dateHTML(when)} ` : 'النسخة '}وفيها ${cars.length} ${cars.length === 1 ? 'سيارة' : 'سيارات'} و${n} تسجيل${inFile ? `، وصور الفواتير: ${nf(inFile)}` : ''}.</p>
+    ${photos.skipped ? `<p class="hint-p" style="margin-top:-8px">في الملف صور أكثر مما يتسع له التطبيق (${nf(LIMITS.photos)})، فستُسترجع التسجيلات كلها و${nf(LIMITS.photos)} صورة فقط.</p>` : ''}
     <button class="btn amber wide" id="rMerge">دمج مع بياناتي الحالية</button>
     <p class="hint" style="font-size:13px;color:var(--muted);margin:6px 2px 14px">السيارة الموجودة في النسختين تُستبدل بنسخة الملف، وتبقى السيارات الأخرى.</p>
     <button class="btn danger wide" id="rReplace">استبدال كل بياناتي بالنسخة</button>`, b => {
@@ -2137,19 +2195,23 @@ async function finishRestore(cars, settings, photos = new Map(), restored = cars
   openSheet('استرجاع نسخة احتياطية', `<p style="margin:0" id="rsProg" role="status">جارٍ الاسترجاع…</p>`);
   let failed = 0;
   try {
-    /* the photos the restored entries use, then references to photos that exist nowhere are dropped */
-    const need = usedPhotoIds(restored);
-    const have = new Set((await Photos.list().catch(() => [])).map(p => p.id));
-    const todo = [...photos.keys()].filter(id => need.has(id) && !have.has(id));
-    for (let i = 0; i < todo.length; i++) {
-      const prog = $('#rsProg'); if (prog) prog.textContent = `جارٍ حفظ صور الفواتير… ${nf(i + 1)} من ${nf(todo.length)}`;
-      try { await Photos.put(new Blob([photos.get(todo[i])], { type: 'image/jpeg' }), todo[i]); have.add(todo[i]); } catch (e) { console.warn('photo restore', e); failed++; }
-    }
-    for (const c of restored) for (const s of c.sections) for (const r of s.rows) if (r.p) { r.p = r.p.filter(id => have.has(id)); if (!r.p.length) delete r.p; }
-    S = sanitizeState({ ...S, cars, settings });
-    save(); applyTheme(); closeSheet(); rolledFor = null; go('home');
+    await photoTask(async () => {
+      /* the photos the restored entries use, then references to photos that exist nowhere are dropped */
+      const need = usedPhotoIds(restored);
+      const have = new Set((await Photos.list().catch(() => [])).map(p => p.id));
+      const todo = [...photos.keys()].filter(id => need.has(id) && !have.has(id));
+      for (let i = 0; i < todo.length; i++) {
+        const prog = $('#rsProg'); if (prog) prog.textContent = `جارٍ حفظ صور الفواتير… ${nf(i + 1)} من ${nf(todo.length)}`;
+        try { await Photos.put(new Blob([photos.get(todo[i])], { type: 'image/jpeg' }), todo[i]); have.add(todo[i]); } catch (e) { console.warn('photo restore', e); failed++; }
+      }
+      for (const c of restored) for (const s of c.sections) for (const r of s.rows) if (r.p) { r.p = r.p.filter(id => have.has(id)); if (!r.p.length) delete r.p; }
+      S = sanitizeState({ ...S, cars, settings });
+      save();
+    });
+    applyTheme(); closeSheet(); rolledFor = null; go('home');
     toast(failed ? `استُرجعت النسخة، وتعذّر حفظ ${nf(failed)} من الصور (مساحة التخزين؟)` : 'استُرجعت النسخة');
-  } finally { restoring = false; }
+  } catch (e) { console.error(e); showImportError(new ImportError('other', (e && e.message) || '')); }
+  finally { restoring = false; }
 }
 /* reads a workbook laid out like the original F150 file: one key/value sheet + table sheets */
 function guessType(label) {
