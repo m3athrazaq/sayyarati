@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+: the backup to the Google account leaves out the invoice photos (see backup_rules.xml:
+     the 25 MB limit). Moving to a new phone by cable or Wi-Fi is not limited and copies everything. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="photos/" />
+    </cloud-backup>
+</data-extraction-rules>

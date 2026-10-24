@@ -115,6 +115,16 @@
     let fileRows = -1;
     try { const f = JSON.parse((await FS.readFile({ path: 'sayyarati-state.json', directory: 'DATA', encoding: 'utf8' })).data); fileRows = f.cars.reduce((a, c) => a + rows(c), 0); } catch (e) { info('state file: ' + e.message); }
     ok(fileRows === before + 1, 'state also saved in the app file (' + fileRows + ')');
+
+    /* 6. reminders: the notification plugin schedules them (the test script grants the permission) */
+    const LN = P.LocalNotifications;
+    ok(!!LN, 'notifications plugin available');
+    if (LN) {
+      info('notification permission: ' + (await LN.checkPermissions().then(r => r.display).catch(e => 'error ' + e.message)));
+      let pending = 0;
+      await until(async () => { pending = (((await LN.getPending()) || {}).notifications || []).length; return pending > 0; }, 20);
+      ok(pending > 0, `reminders scheduled as phone notifications (${pending})`);
+    }
     await mark('STEP home', 2500);
     log.push('DONE');
   } catch (e) {

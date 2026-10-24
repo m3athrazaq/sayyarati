@@ -7,6 +7,10 @@
     "SystemBars": {
       "insetsHandling": "native",
       "initialViewportFitValueHint": "cover"
+    },
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_sayyarati",
+      "iconColor": "#E9A23B"
     }
   },
   "android": {

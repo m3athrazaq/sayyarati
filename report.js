@@ -270,6 +270,41 @@
       y -= 14;
     }
 
+    /* photos: two per row, each with its caption; the JPEG goes into the PDF as it is (full resolution,
+       so it can be zoomed in a PDF viewer). A file that is not a valid JPEG gets a placeholder. */
+    async function photos(block) {
+      const gap = 10, cw = (CW - gap) / 2, size = 8, lh = 11, maxH = 300;
+      const cells = [];
+      for (const it of block.items || []) {
+        let img = null;
+        try { img = await doc.embedJpg(it.jpg); } catch (e) { img = null; }
+        const k = img ? Math.min((cw - 12) / img.width, maxH / img.height) : 0;
+        const w = img ? img.width * k : cw - 12, h = img ? img.height * k : 60;
+        const cap = wrap(it.caption || '', reg, size, cw - 12).slice(0, 2);
+        cells.push({ img, w, h, cap, ch: 8 + cap.length * lh + 6 + h + 8 });
+      }
+      if (!cells.length) return;
+      room(Math.max(...cells.slice(0, 2).map(p => p.ch)) + gap + 34);   // the heading stays with its first photos
+      heading(block.title, block.note);
+      for (let i = 0; i < cells.length; i += 2) {
+        const pair = cells.slice(i, i + 2);
+        const rowH = Math.max(...pair.map(p => p.ch));
+        room(rowH + gap);
+        pair.forEach((p, k) => {
+          const xR = R - k * (cw + gap), xL = xR - cw;
+          page.drawRectangle({ x: xL, y: y - rowH, width: cw, height: rowH, color: col(COLORS.zebra), borderColor: col(COLORS.line), borderWidth: 0.5 });
+          p.cap.forEach((ln, j) => drawRuns(page, ln, xR - 6, y - 6 - size - j * lh, size, j ? reg : bold, j ? COLORS.muted : COLORS.ink, 'right'));
+          const top = y - 8 - p.cap.length * lh - 6;
+          if (p.img) {
+            page.drawImage(p.img, { x: xL + (cw - p.w) / 2, y: top - p.h, width: p.w, height: p.h });
+            page.drawRectangle({ x: xL + (cw - p.w) / 2, y: top - p.h, width: p.w, height: p.h, borderColor: col(COLORS.line), borderWidth: 0.5 });
+          } else line(page, 'تعذّر عرض هذه الصورة', xL + cw / 2, top - 34, 9, reg, COLORS.muted, 'center');
+        });
+        y -= rowH + gap;
+      }
+      y -= 4;
+    }
+
     /* ---------- the report ---------- */
     newPage(true);
     if (model.notice) {
@@ -283,6 +318,7 @@
     for (const block of model.blocks || []) {
       if (block.type === 'kv') { heading(block.title, block.note); keyValues(block.rows); }
       else if (block.type === 'table') { heading(block.title, block.note); table(block); }
+      else if (block.type === 'photos') await photos(block);
     }
 
     /* footer with page numbers */

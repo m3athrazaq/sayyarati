@@ -6,14 +6,15 @@
    - كل نص يُدرج في HTML يمر عبر esc()، وكل معرّف/لون/نوع يأتي من ملف يُتحقق منه في sanitize*().
    - لا eval ولا سكربتات خارجية؛ سياسة CSP في index.html تمنع أي سكربت غير ملفات التطبيق نفسه.
    ====================================================================== */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const KEY = 'sayyarati.state.v1';
 const NATIVE_FILE = 'sayyarati-state.json';
-const MAX_IMPORT_BYTES = 20 * 1024 * 1024;
+/* a backup with invoice photos can be large; the native picker has the same limit */
+const MAX_IMPORT_BYTES = 150 * 1024 * 1024;
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 /* files loaded on demand and their integrity hashes — written by tools/stamp.py; the browser refuses
    any file whose content does not match. The address carries part of the hash, so caches never mix versions. */
-const VENDOR = {"vendor/exceljs.min.js": "sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz", "vendor/pdf-lib.min.js": "sha384-weMABwrltA6jWR8DDe9Jp5blk+tZQh7ugpCsF3JwSA53WZM9/14PjS5LAJNHNjAI", "vendor/fontkit.umd.min.js": "sha384-2p6U+1mmqF10USehFeRiyG2ESG9FwIqN+jxULn5w9jjQIihSn9Pt13dVCn/Hawjn", "vendor/bidi.min.js": "sha384-wQtTdqzwTFhzi4xIX4wrLGvJHshKoK61RCcjZ4lwr/sZBggODJHSpl5bHBcUfeV2", "report.js": "sha384-4BZRXPnXfxilPoAVsAK0vuah9h1Dgsk/74Q7Vuq/+o5n62wM46Luvh9xouzOoIDA", "fonts/readex-report-400.ttf": "sha384-ZM9Zf46J0OTwwwL0lozkZa1qmDdWydinkx/JWuHjNv6S+0tSnrVMfJETkg5ZJl4l", "fonts/readex-report-700.ttf": "sha384-3xKwULn0RBRanuHVN8nTl+EbdhgM5YYhZQH4mk9u0MUTYD0fHrZkskxRt1gBAjVy"};
+const VENDOR = {"vendor/exceljs.min.js": "sha384-Pqp51FUN2/qzfxZxBCtF0stpc9ONI6MYZpVqmo8m20SoaQCzf+arZvACkLkirlPz", "vendor/pdf-lib.min.js": "sha384-weMABwrltA6jWR8DDe9Jp5blk+tZQh7ugpCsF3JwSA53WZM9/14PjS5LAJNHNjAI", "vendor/fontkit.umd.min.js": "sha384-2p6U+1mmqF10USehFeRiyG2ESG9FwIqN+jxULn5w9jjQIihSn9Pt13dVCn/Hawjn", "vendor/bidi.min.js": "sha384-wQtTdqzwTFhzi4xIX4wrLGvJHshKoK61RCcjZ4lwr/sZBggODJHSpl5bHBcUfeV2", "report.js": "sha384-PbMBZxGmhPVv1iqD2xwVEq2zxKiUkuCEEvmGinsNI9a8dOFcCTYEobi34FkNn73+", "fonts/readex-report-400.ttf": "sha384-ZM9Zf46J0OTwwwL0lozkZa1qmDdWydinkx/JWuHjNv6S+0tSnrVMfJETkg5ZJl4l", "fonts/readex-report-700.ttf": "sha384-3xKwULn0RBRanuHVN8nTl+EbdhgM5YYhZQH4mk9u0MUTYD0fHrZkskxRt1gBAjVy"};
 
 /* refuse to run inside a frame (another site embedding the app) */
 if (window.top !== window.self) {
@@ -57,23 +58,36 @@ const ICONS = {
 };
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const icon = (k, s = 20) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${has(ICONS, k) ? ICONS[k] : ICONS.doc}</svg>`;
+/* small UI icons (not offered as section icons) */
+const UI_ICONS = {
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/>',
+  bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21h4"/>',
+  cal: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+  share: '<path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 13v8h14v-8"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  gauge: '<path d="M4 15a8 8 0 1 1 16 0"/><path d="M12 15l4-5"/>'
+};
+const uiIcon = (k, s = 18) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${UI_ICONS[k] || ''}</svg>`;
 
 /* ---------- templates ---------- */
 const COL = (id, label, type) => ({ id, label, type });
+/* reminderKm / reminderMonths: the next one is due after that distance or that time, whichever comes first (0 = off) */
 const SECTION_TEMPLATES = {
-  oil: () => ({ id: 'oil', name: 'الزيوت', icon: 'oil', note: '', reminderKm: 7500,
+  oil: () => ({ id: 'oil', name: 'الزيوت', icon: 'oil', note: '', reminderKm: 7500, reminderMonths: 6,
     columns: [COL('desc','بيان','text'), COL('odo','العداد','odometer'), COL('dist','المسافة','distance'), COL('date','التاريخ','date'), COL('amount','المبلغ','money'), COL('oil','الزيت','text'), COL('notes','ملاحظات','text')], rows: [] }),
-  maint: () => ({ id: 'maint', name: 'الصيانة', icon: 'wrench', note: '', reminderKm: 0,
+  maint: () => ({ id: 'maint', name: 'الصيانة', icon: 'wrench', note: '', reminderKm: 0, reminderMonths: 0,
     columns: [COL('desc','بيان','text'), COL('odo','العداد','odometer'), COL('date','التاريخ','date'), COL('amount','المبلغ','money'), COL('notes','ملاحظات','text')], rows: [] }),
-  fuel: () => ({ id: 'fuel', name: 'الوقود', icon: 'fuel', note: '', reminderKm: 0,
+  fuel: () => ({ id: 'fuel', name: 'الوقود', icon: 'fuel', note: '', reminderKm: 0, reminderMonths: 0,
     columns: [COL('date','التاريخ','date'), COL('odo','العداد','odometer'), COL('dist','المسافة','distance'), COL('liters','اللترات','number'), COL('amount','المبلغ','money'), COL('station','المحطة','text')], rows: [] }),
-  tires: () => ({ id: 'tires', name: 'الإطارات', icon: 'tire', note: '', reminderKm: 0,
+  tires: () => ({ id: 'tires', name: 'الإطارات', icon: 'tire', note: '', reminderKm: 0, reminderMonths: 0,
     columns: [COL('desc','بيان','text'), COL('odo','العداد','odometer'), COL('date','التاريخ','date'), COL('brand','النوع والمقاس','text'), COL('amount','المبلغ','money'), COL('notes','ملاحظات','text')], rows: [] }),
-  ins: () => ({ id: 'ins', name: 'التأمين والترخيص', icon: 'shield', note: '', reminderKm: 0,
+  ins: () => ({ id: 'ins', name: 'التأمين والترخيص', icon: 'shield', note: '', reminderKm: 0, reminderMonths: 0,
     columns: [COL('desc','بيان','text'), COL('date','التاريخ','date'), COL('expiry','تاريخ الانتهاء','date'), COL('amount','المبلغ','money'), COL('notes','ملاحظات','text')], rows: [] }),
-  wash: () => ({ id: 'wash', name: 'الغسيل والعناية', icon: 'drop', note: '', reminderKm: 0,
+  wash: () => ({ id: 'wash', name: 'الغسيل والعناية', icon: 'drop', note: '', reminderKm: 0, reminderMonths: 0,
     columns: [COL('desc','بيان','text'), COL('date','التاريخ','date'), COL('amount','المبلغ','money'), COL('notes','ملاحظات','text')], rows: [] }),
-  blank: () => ({ id: uid(), name: 'قسم جديد', icon: 'star', note: '', reminderKm: 0,
+  blank: () => ({ id: uid(), name: 'قسم جديد', icon: 'star', note: '', reminderKm: 0, reminderMonths: 0,
     columns: [COL(uid(),'بيان','text'), COL(uid(),'التاريخ','date'), COL(uid(),'المبلغ','money'), COL(uid(),'ملاحظات','text')], rows: [] })
 };
 const TEMPLATE_NAMES = { oil: 'الزيوت', maint: 'الصيانة', fuel: 'الوقود', tires: 'الإطارات', ins: 'التأمين والترخيص', wash: 'الغسيل والعناية', blank: 'قسم فارغ' };
@@ -101,7 +115,8 @@ function newCar(name, fromCar) {
    A backup file is untrusted input: every id, colour, type and value is
    checked here, so nothing in it can inject HTML or break the app.
    ====================================================================== */
-const LIMITS = { cars: 50, cardFields: 60, sections: 40, columns: 40, rows: 5000, totalRows: 15000, text: 2000, label: 80, backupChars: 40e6 };
+const LIMITS = { cars: 50, cardFields: 60, sections: 40, columns: 40, rows: 5000, totalRows: 15000, text: 2000, label: 80, backupChars: 40e6,
+  photosPerRow: 6, photos: 3000, photoBytes: 4 * 1024 * 1024 };
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -148,18 +163,27 @@ function sanitizeSection(s, usedSec) {
     const src = isObj(r.v) ? r.v : {};
     const v = {};
     for (const c of columns) if (c.type !== 'distance') v[c.id] = typeof c._src === 'string' && has(src, c._src) ? cleanValue(c.type, src[c._src]) : '';
-    rows.push({ id: cleanId(r.id, usedRow), t: finite(r.t, Date.now()), v });
+    const row = { id: cleanId(r.id, usedRow), t: finite(r.t, Date.now()), v };
+    const p = cleanPhotoIds(r.p);
+    if (p.length) row.p = p;
+    rows.push(row);
   }
   columns.forEach(c => delete c._src);
+  const reminderKm = Math.min(1e6, Math.max(0, finite(typeof s.reminderKm === 'string' ? toNum(s.reminderKm) : s.reminderKm, 0)));
+  const months = finite(typeof s.reminderMonths === 'string' ? toNum(s.reminderMonths) : s.reminderMonths, NaN);
   return {
     id: cleanId(s.id, usedSec),
     name: str(s.name, LIMITS.label).trim() || 'قسم',
     icon: typeof s.icon === 'string' && has(ICONS, s.icon) ? s.icon : 'doc',
     note: str(s.note, 200),
-    reminderKm: Math.min(1e6, Math.max(0, finite(typeof s.reminderKm === 'string' ? toNum(s.reminderKm) : s.reminderKm, 0))),
+    reminderKm,
+    /* data from before 1.3 has no time interval: the oil section gets "every 6 months" like a new one */
+    reminderMonths: isFinite(months) ? Math.min(120, Math.max(0, Math.round(months))) : (s.id === 'oil' && reminderKm > 0 ? 6 : 0),
     columns, rows
   };
 }
+/* invoice photo references of an entry: ids only (the photos themselves are stored separately) */
+const cleanPhotoIds = list => [...new Set(arr(list).filter(x => typeof x === 'string' && ID_RE.test(x) && !(x in Object.prototype)))].slice(0, LIMITS.photosPerRow);
 function sanitizeCar(c, usedCar) {
   if (!isObj(c) || (!Array.isArray(c.sections) && !Array.isArray(c.cardFields))) return null;
   const usedF = new Set(); const cardFields = [];
@@ -179,13 +203,22 @@ function sanitizeCar(c, usedCar) {
     odoNow, created: finite(c.created, Date.now()), cardFields, sections
   };
 }
+const LEAD_DAYS = [7, 14, 30, 60];
+const NUDGE_DAYS = [0, 14, 30, 60];
 function sanitizeSettings(x) {
   const s = isObj(x) ? x : {};
   const dec = Number(s.decimals);
+  const pick = (v, list, d) => (typeof v === 'number' && list.includes(v) ? v : d);
   return {
     currency: str(s.currency, 12).trim() || 'د.ك',
     decimals: [0, 2, 3].includes(dec) ? dec : 3,
-    theme: ['auto', 'light', 'dark'].includes(s.theme) ? s.theme : 'auto'
+    theme: ['auto', 'light', 'dark'].includes(s.theme) ? s.theme : 'auto',
+    /* reminders: phone notifications (Android app), the hour they arrive, how early before an expiry,
+       and how often to ask for a fresh odometer reading (0 = never) */
+    notify: s.notify !== false,
+    notifyHour: typeof s.notifyHour === 'number' && Number.isInteger(s.notifyHour) && s.notifyHour >= 0 && s.notifyHour <= 23 ? s.notifyHour : 9,
+    expiryLead: pick(s.expiryLead, LEAD_DAYS, 30),
+    odoNudge: pick(s.odoNudge, NUDGE_DAYS, 30)
   };
 }
 function sanitizeCars(list) { const used = new Set(); return arr(list).slice(0, LIMITS.cars).map(c => sanitizeCar(c, used)).filter(Boolean); }
@@ -232,6 +265,7 @@ function save() {
       fs.writeFile({ path: NATIVE_FILE, data: JSON.stringify(S), directory: 'DATA', encoding: 'utf8', recursive: true })
         .then(() => setSaveOk(true)).catch(e => { console.warn(e); setSaveOk(false); });
     }, 150);
+    scheduleNotifSync();
   } else setSaveOk(ok);
 }
 function setSaveOk(ok) {
@@ -273,6 +307,33 @@ const toNum = v => {
   const n = Number(t); return isFinite(n) ? n : null;
 };
 const daysBetween = (a, b) => (new Date(b) - new Date(a)) / 864e5;
+const isoParts = iso => iso.split('-').map(Number);
+function addDaysISO(iso, n) { const [y, m, d] = isoParts(iso); return new Date(Date.UTC(y, m - 1, d + n)).toISOString().slice(0, 10); }
+/* same day n months later (31 Aug + 6 months = 28/29 Feb) */
+function addMonthsISO(iso, n) {
+  const [y, m, d] = isoParts(iso);
+  const last = new Date(Date.UTC(y, m + n, 0)).getUTCDate();
+  return new Date(Date.UTC(y, m - 1 + n, Math.min(d, last))).toISOString().slice(0, 10);
+}
+const daysUntil = iso => Math.round(daysBetween(todayISO(), iso));
+/* Arabic counted nouns: 1 يوم واحد، 2 يومين، 3–10 أيام، 11–99 يوماً */
+function counted(n, one, two, few, many, plain) {
+  n = Math.abs(Math.round(n));
+  if (n === 1) return one;
+  if (n === 2) return two;
+  const t = n % 100;
+  return `${nf(n)} ${t >= 3 && t <= 10 ? few : t >= 11 ? many : plain}`;
+}
+const nDays = n => counted(n, 'يوم واحد', 'يومين', 'أيام', 'يوماً', 'يوم');
+const nMonths = n => counted(n, 'شهر واحد', 'شهرين', 'أشهر', 'شهراً', 'شهر');
+const nPhotos = n => counted(n, 'صورة واحدة', 'صورتان', 'صور', 'صورة', 'صورة');
+/* "بعد 5 أيام" / "اليوم" / "غداً" / "منذ يومين" */
+function inDays(n) {
+  if (n === 0) return 'اليوم';
+  if (n === 1) return 'غداً';
+  if (n === -1) return 'أمس';
+  return n > 0 ? `بعد ${nDays(n)}` : `منذ ${nDays(-n)}`;
+}
 
 /* ---------- computations ---------- */
 const colOf = (sec, type) => sec.columns.find(c => c.type === type);
@@ -325,43 +386,129 @@ function kmPerDay(c) {
   if (days < 7) return null;
   return (last.odo - first.odo) / days;
 }
+/* the latest odometer reading that has a date */
+function lastDated(c) {
+  let best = null;
+  for (const p of odoPoints(c)) if (p.date && (!best || p.date > best.date || (p.date === best.date && p.odo > best.odo))) best = p;
+  return best;
+}
+/* the day the odometer should reach `target`, from the latest dated reading and the driving rate */
+function etaFor(c, target, rate) {
+  const base = lastDated(c);
+  if (!base || !rate || rate <= 0) return null;
+  const days = Math.round((target - base.odo) / rate);
+  return isFinite(days) && Math.abs(days) <= 3650 ? addDaysISO(base.date, days) : null;
+}
+/* next service of each section that has a reminder: by distance (reminderKm), by time (reminderMonths),
+   or both — whichever comes first */
 function reminders(c) {
   const out = [];
-  const cur = currentOdo(c);
+  const cur = currentOdo(c), rate = kmPerDay(c), today = todayISO();
   for (const s of c.sections) {
-    const o = colOf(s, 'odometer');
-    if (!o || !(s.reminderKm > 0)) continue;
-    const rows = chrono(s).filter(r => toNum(r.v[o.id]) != null);
-    if (!rows.length) { out.push({ sec: s, none: true }); continue; }
-    const lastOdo = toNum(rows[rows.length - 1].v[o.id]);
-    const used = Math.max(0, cur - lastOdo);
-    out.push({ sec: s, lastOdo, used, next: lastOdo + s.reminderKm, left: lastOdo + s.reminderKm - cur, ratio: used / s.reminderKm });
+    const o = colOf(s, 'odometer'), d = colOf(s, 'date');
+    const useKm = !!o && s.reminderKm > 0, useTime = !!d && s.reminderMonths > 0;
+    if (!useKm && !useTime) continue;
+    let kmP = null, timeP = null;
+    if (useKm) {
+      let lastOdo = null;
+      for (const r of s.rows) { const v = toNum(r.v[o.id]); if (v != null && (lastOdo == null || v > lastOdo)) lastOdo = v; }
+      if (lastOdo != null) {
+        const next = lastOdo + s.reminderKm, used = Math.max(0, cur - lastOdo);
+        kmP = { lastOdo, next, used, left: next - cur, ratio: used / s.reminderKm, eta: etaFor(c, next, rate) };
+      }
+    }
+    if (useTime) {
+      let last = '';
+      for (const r of s.rows) { const v = r.v[d.id]; if (ISO_RE.test(v) && v > last) last = v; }
+      if (last) {
+        const due = addMonthsISO(last, s.reminderMonths);
+        timeP = { last, due, days: Math.round(daysBetween(today, due)), ratio: Math.max(0, daysBetween(last, today)) / Math.max(1, daysBetween(last, due)) };
+      }
+    }
+    if (!kmP && !timeP) { out.push({ sec: s, none: true }); continue; }
+    let by = kmP ? 'km' : 'time';
+    if (kmP && timeP) {
+      if (kmP.left <= 0) by = 'km';
+      else if (timeP.days < 0) by = 'time';
+      else if (kmP.eta) by = kmP.eta <= timeP.due ? 'km' : 'time';
+      else by = kmP.ratio >= timeP.ratio ? 'km' : 'time';
+    }
+    /* the date it falls due: the time limit, or the day the distance should be reached at the usual driving
+       rate (an estimate). Once overdue, the date it became due; otherwise the next one still ahead. */
+    const late = !!((kmP && kmP.left <= 0) || (timeP && timeP.days < 0));
+    let due = null;
+    if (late) due = [kmP && kmP.left <= 0 ? kmP.eta : null, timeP && timeP.days < 0 ? timeP.due : null].filter(Boolean).sort()[0] || null;
+    else due = [timeP && timeP.due, kmP && kmP.eta].filter(x => x && x >= today).sort()[0] || null;
+    out.push({ sec: s, km: kmP, time: timeP, by, due, late, est: !!due && !(timeP && timeP.due === due),
+      /* the last reading is old: at the usual rate the distance has probably been reached already */
+      stale: !!(kmP && kmP.eta && kmP.eta < today && kmP.left > 0),
+      ratio: Math.max(kmP ? kmP.ratio : 0, timeP ? timeP.ratio : 0) });
   }
   return out;
 }
-/* expiry reminders (e.g. insurance) */
+/* "عند 15,000 كم أو في 01.04.2027" (plain text) */
+function svcWhen(x) {
+  const parts = [];
+  if (x.km) parts.push(`عند ${nf(x.km.next)} كم`);
+  if (x.time) parts.push(`في ${fmtDate(x.time.due)}`);
+  return parts.join(' أو ') + (parts.length > 1 ? '، أيهما أسبق' : '');
+}
+
+/* expiry reminders (insurance, registration…): date items whose name says they expire, in the car card
+   and in the sections. Entries are grouped by what they are, so a section holding both the insurance and
+   the registration reminds of each; anything that expired more than 60 days ago is no longer shown. */
+const EXPIRY_RE = /انتهاء|ينتهي|صلاحية|تجديد|expir|renew/i;
+function expiryGroup(title) {
+  const t = norm(title);
+  if (/تأمين|تامين|insurance/.test(t)) return 'ins';
+  if (/دفتر|ترخيص|استمار|registration/.test(t)) return 'reg';
+  if (/رخص|licen[cs]e/.test(t)) return 'lic';
+  if (/فحص|inspection/.test(t)) return 'insp';
+  return t.replace(/[0-9٠-٩]+/g, ' ').replace(/\s+/g, ' ').trim() || '-';
+}
 function expiries(c) {
-  const out = []; const t = todayISO();
+  const out = [], today = todayISO();
+  const add = (key, title, date, sec) => { const days = Math.round(daysBetween(today, date)); if (days >= -60) out.push({ key, title, date, days, sec }); };
+  for (const f of c.cardFields) if (f.type === 'date' && EXPIRY_RE.test(f.label) && ISO_RE.test(f.value)) add('f-' + f.id, f.label, f.value, null);
   for (const s of c.sections) for (const col of s.columns) {
-    if (col.type !== 'date' || !/انتهاء|ينتهي|صلاحية|expiry/i.test(col.label)) continue;
-    let latest = null;
-    for (const r of s.rows) { const v = r.v[col.id]; if (ISO_RE.test(v) && (!latest || v > latest.v)) latest = { v, r }; }
-    if (latest) out.push({ sec: s, col, date: latest.v, days: Math.round(daysBetween(t, latest.v)), title: (textCol(s) && latest.r.v[textCol(s).id]) || s.name });
+    if (col.type !== 'date' || !EXPIRY_RE.test(col.label)) continue;
+    const tc = textCol(s), groups = new Map();
+    for (const r of s.rows) {
+      const v = r.v[col.id]; if (!ISO_RE.test(v)) continue;
+      const title = String((tc && r.v[tc.id]) || '').trim() || s.name;
+      const g = expiryGroup(title), cur = groups.get(g);
+      if (!cur || v > cur.date) groups.set(g, { date: v, title });
+    }
+    for (const [g, x] of groups) add(`s-${s.id}-${col.id}-${hashId(g).toString(36)}`, x.title, x.date, s);
   }
-  return out;
+  return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+}
+/* every upcoming date of a car, for the list, the calendar file and the phone notifications */
+function dueItems(c) {
+  const items = [];
+  for (const x of reminders(c)) if (!x.none) items.push({ type: 'svc', key: 'svc-' + x.sec.id, c, x, date: x.due });
+  for (const e of expiries(c)) items.push({ type: 'exp', key: 'exp-' + e.key, c, e, date: e.date });
+  return items;
+}
+/* stable 31-bit number for a text (notification ids, calendar ids) */
+function hashId(s) {
+  let h = 0x811c9dc5;
+  for (const ch of String(s)) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193); }
+  return (h >>> 1) || 1;
 }
 
 /* ---------- UI helpers ---------- */
 let toastT;
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2800); }
 function openSheet(title, html, onMount) {
+  releaseUrls();
   $('#sheetTitle').textContent = title;
   $('#sheetBody').innerHTML = html;
   $('#sheetBody').scrollTop = 0;
   $('#scrim').classList.add('on'); $('#sheet').classList.add('on');
   if (onMount) onMount($('#sheetBody'));
 }
-function closeSheet() { $('#scrim').classList.remove('on'); $('#sheet').classList.remove('on'); }
+function closeSheet() { $('#scrim').classList.remove('on'); $('#sheet').classList.remove('on'); setTimeout(() => { if (!sheetOpen()) releaseUrls(); }, 400); }
 const sheetOpen = () => $('#sheet').classList.contains('on');
 function confirmBox(msg, okLabel, onOk, danger = true, onCancel = null) {
   openSheet('تأكيد', `<p style="margin:4px 0 20px">${esc(msg)}</p>
@@ -462,15 +609,30 @@ function renderHome() {
   let dueHTML = '';
   for (const x of rem) {
     if (x.none) { dueHTML += `<div class="due"><div class="due-txt"><b>${esc(x.sec.name)}</b><small>سجّل أول عملية ليبدأ حساب الموعد القادم.</small></div></div>`; continue; }
-    let eta = '';
-    if (rate && x.left > 0) { const d = Math.round(x.left / rate); eta = d <= 1 ? 'خلال يوم تقريباً' : `بعد نحو ${d} يوماً حسب معدل قيادتك`; }
-    const head = x.left > 0 ? `باقي ${km(x.left)}` : `متأخر ${km(-x.left)}`;
-    dueHTML += `<div class="due">${gaugeSVG(x.ratio)}<div class="due-txt"><small>${esc(x.sec.name)} القادم عند ${km(x.next)}</small><b>${head}</b><small>${eta || `قطعت ${km(x.used)} من ${km(x.sec.reminderKm)}`}</small></div></div>`;
+    const k = x.km, t = x.time;
+    let head, foot;
+    if (x.by === 'km') {
+      head = k.left > 0 ? `باقي ${km(k.left)}` : `متأخر ${km(-k.left)}`;
+      const d = k.eta && k.left > 0 ? daysUntil(k.eta) : null;
+      foot = x.stale ? '<span class="warn-t">آخر قراءة قديمة، وحسب معدل قيادتك ربما حان الموعد. حدّث العداد.</span>'
+        : d != null && d >= 0 ? (d <= 1 ? 'خلال يوم تقريباً حسب معدل قيادتك' : `بعد نحو ${esc(nDays(d))} حسب معدل قيادتك`) : `قطعت ${km(k.used)} من ${km(x.sec.reminderKm)}`;
+    } else {
+      head = t.days > 0 ? `باقي ${esc(nDays(t.days))}` : t.days === 0 ? 'الموعد اليوم' : `متأخر ${esc(nDays(-t.days))}`;
+      foot = `آخر مرة ${dateHTML(t.last)}`;
+    }
+    const when = [k ? `عند ${km(k.next)}` : '', t ? `في ${dateHTML(t.due)}` : ''].filter(Boolean).join(' أو ');
+    dueHTML += `<div class="due">${gaugeSVG(x.ratio)}<div class="due-txt"><small>${esc(x.sec.name)} القادم ${when}${k && t ? ' (أيهما أسبق)' : ''}</small><b>${head}</b><small>${foot}</small></div></div>`;
   }
   for (const e of exp) {
-    const head = e.days >= 0 ? `ينتهي بعد ${e.days} يوماً` : `انتهى منذ ${-e.days} يوماً`;
+    const head = e.days > 0 ? `ينتهي ${esc(inDays(e.days))}` : e.days === 0 ? 'ينتهي اليوم' : `انتهى ${esc(inDays(e.days))}`;
     dueHTML += `<div class="due"><div class="due-txt"><small>${esc(e.title)}</small><b style="color:${e.days < 0 ? 'var(--bad)' : e.days < 30 ? 'var(--warn)' : 'inherit'}">${head}</b><small>${dateHTML(e.date)}</small></div></div>`;
   }
+  if (dueHTML) dueHTML += `<div class="due-foot"><button id="hUpcoming">${uiIcon('cal', 16)} كل المواعيد${isNative ? ' والإشعارات' : ' والتقويم'}</button></div>`;
+  /* the odometer reading the distance reminders rely on is getting old */
+  const ld = lastDated(c);
+  const usesKm = c.sections.some(s => s.reminderKm > 0 && colOf(s, 'odometer'));
+  const staleDays = ld && usesKm && S.settings.odoNudge > 0 ? -daysUntil(ld.date) : 0;
+  const askNotify = isNative && S.settings.notify && /^prompt/.test(notifPerm || '') && (rem.some(x => !x.none) || exp.length);
 
   const recent = [];
   for (const s of c.sections) for (const r of s.rows) recent.push({ s, r });
@@ -484,13 +646,14 @@ function renderHome() {
   <div class="cluster">
     <div class="car-name">${esc(c.name)}</div>
     <p class="car-sub">${esc(sub.join('، ')) || '&nbsp;'}</p>
-    <div class="odo-label">العداد الحالي</div>
+    <div class="odo-label">العداد الحالي${staleDays >= S.settings.odoNudge && staleDays > 0 ? ` · <span class="stale">آخر قراءة ${esc(inDays(-staleDays))}</span>` : ''}</div>
     <div class="odo-wrap">
       <div style="display:flex;align-items:flex-end">${odoHTML(cur)}<span class="odo-unit">كم</span></div>
       <button class="odo-btn" id="hOdo">تحديث العداد</button>
     </div>
   </div>
   ${dueHTML ? `<div class="block lift due-list">${dueHTML}</div>` : ''}
+  ${askNotify ? `<div class="backup-note notify-note">${uiIcon('bell', 18)}<span>فعّل الإشعارات ليذكّرك التطبيق بموعد الزيت وانتهاء التأمين حتى وهو مغلق.</span><button id="hNotifyOn">تفعيل</button><button id="hNotifyNo" class="mute">ليس الآن</button></div>` : ''}
   ${!saveOk ? `<div class="backup-note" style="background:color-mix(in srgb,var(--bad) 18%,transparent)">آخر تعديل لم يُحفظ على الجهاز.<button id="hSaveFail">صدّر نسخة احتياطية</button></div>` : ''}
   ${backupWarn ? `<div class="backup-note">${daysSinceBackup == null ? 'لم تحفظ نسخة احتياطية بعد.' : `آخر نسخة احتياطية قبل ${daysSinceBackup} يوماً.`}<button id="hBackup">احفظ الآن</button></div>` : ''}
   <div class="block ${dueHTML ? '' : 'lift'}">
@@ -514,12 +677,15 @@ function renderHome() {
   $('#hAll').onclick = () => go('logs');
   if ($('#hBackup')) $('#hBackup').onclick = openBackup;
   if ($('#hSaveFail')) $('#hSaveFail').onclick = openBackup;
+  if ($('#hUpcoming')) $('#hUpcoming').onclick = openUpcoming;
+  if ($('#hNotifyOn')) $('#hNotifyOn').onclick = () => enableNotifications(true);
+  if ($('#hNotifyNo')) $('#hNotifyNo').onclick = () => { S.settings.notify = false; save(); render(); toast('يمكنك تفعيل الإشعارات لاحقاً من الإعدادات'); };
   $('#v-home').querySelectorAll('[data-sec][data-row]').forEach(b => b.onclick = () => openEntry(b.dataset.sec, b.dataset.row));
 }
 function recentItem(s, r) {
   const t = textCol(s), d = colOf(s, 'date'), m = s.columns.find(c => c.type === 'money');
   return `<button class="list-item" data-sec="${esc(s.id)}" data-row="${esc(r.id)}"><span class="ic">${icon(s.icon)}</span>
-    <span class="grow"><b style="font-weight:500">${esc((t && r.v[t.id]) || s.name)}</b><small>${esc(s.name)}${d && r.v[d.id] ? ` · ${dateHTML(r.v[d.id])}` : ''}</small></span>
+    <span class="grow"><b style="font-weight:500">${esc((t && r.v[t.id]) || s.name)}</b><small>${esc(s.name)}${d && r.v[d.id] ? ` · ${dateHTML(r.v[d.id])}` : ''}${r.p && r.p.length ? ` · ${uiIcon('camera', 13)}` : ''}</small></span>
     ${m && toNum(r.v[m.id]) ? `<b style="font-weight:500;white-space:nowrap">${money(r.v[m.id])}</b>` : ''}</button>`;
 }
 function fmtVal(type, v) {
@@ -556,6 +722,7 @@ function renderLogs() {
       if (d && r.v[d.id]) meta.push(`<span><b>${dateHTML(r.v[d.id])}</b></span>`);
       if (dc && dist.has(r.id)) meta.push(`<span class="gap-tag">+${km(dist.get(r.id))}</span>`);
       for (const x of others) if (r.v[x.id] !== '' && r.v[x.id] != null) meta.push(`<span>${esc(x.label)}: <b>${fmtVal(x.type, r.v[x.id])}</b></span>`);
+      if (r.p && r.p.length) meta.push(`<span class="clip" aria-label="${r.p.length} صورة">${uiIcon('camera', 14)}<b class="num">${r.p.length}</b></span>`);
       return `<li><button class="entry" data-row="${esc(r.id)}"><div class="entry-top"><span class="entry-title">${esc((t && r.v[t.id]) || s.name)}</span>${m.length ? `<span class="entry-amt">${amt ? money(amt) : ''}</span>` : ''}</div>
         <div class="entry-meta">${meta.join('')}</div></button></li>`;
     }).join('')}</ul>` : `<div class="empty"><b>${q ? 'لا نتائج' : 'القسم فارغ'}</b>${q ? 'جرّب كلمة أخرى.' : 'اضغط زر + لإضافة أول تسجيل.'}</div>`}`;
@@ -572,9 +739,51 @@ function renderLogs() {
 let draft = null;
 function openEntry(secId, rowId) {
   const c = car();
-  draft = { carId: c.id, secId: secId || activeSec || (c.sections[0] && c.sections[0].id), rowId: rowId || null, v: {} };
-  if (rowId) { const s = c.sections.find(x => x.id === draft.secId); const r = s && s.rows.find(x => x.id === rowId); if (r) draft.v = clone(r.v); else draft.rowId = null; }
+  draft = { carId: c.id, secId: secId || activeSec || (c.sections[0] && c.sections[0].id), rowId: rowId || null, v: {}, p: [] };
+  if (rowId) {
+    const s = c.sections.find(x => x.id === draft.secId); const r = s && s.rows.find(x => x.id === rowId);
+    if (r) { draft.v = clone(r.v); draft.p = (r.p || []).slice(); } else draft.rowId = null;
+  }
   renderEntry();
+}
+/* ---------- invoice photos in the entry form ---------- */
+let photoBusy = 0;
+function photoTilesHTML() {
+  const tiles = draft.p.map((id, i) => `<button class="ph" data-pi="${i}" aria-label="صورة الفاتورة ${i + 1}"><img data-ph="${esc(id)}" alt=""></button>`).join('');
+  return tiles + (photoBusy ? `<span class="ph busy" role="status">جارٍ التجهيز…</span>` : '');
+}
+function redrawPhotos() {
+  const box = $('#phList'); if (!box || !draft) return;
+  box.innerHTML = photoTilesHTML();
+  box.classList.toggle('empty', !draft.p.length && !photoBusy);
+  const full = draft.p.length + photoBusy >= LIMITS.photosPerRow;
+  $('#sheetBody').querySelectorAll('#phCam,#phPick').forEach(b => { b.disabled = full; });
+  box.querySelectorAll('[data-pi]').forEach(b => b.onclick = () => openViewer(draft.p.slice(), +b.dataset.pi, id => { const k = draft.p.indexOf(id); if (k >= 0) draft.p.splice(k, 1); redrawPhotos(); }));
+  fillPhotos(box);
+}
+/* puts the stored images into <img data-ph="id"> (a missing one is marked, never an error) */
+async function fillPhotos(root) {
+  for (const img of root.querySelectorAll('img[data-ph]')) {
+    const u = await Photos.url(img.dataset.ph).catch(() => null);
+    if (!img.isConnected) continue;
+    if (u) { img.onerror = () => img.closest('.ph').classList.add('missing'); img.src = u; }
+    else img.closest('.ph').classList.add('missing');
+  }
+}
+async function addPhotoFiles(files) {
+  const d = draft;
+  if (!d || !files || !files.length) return;
+  const room = LIMITS.photosPerRow - d.p.length - photoBusy;
+  if (files.length > room) toast(`يمكن إرفاق ${LIMITS.photosPerRow} صور بحد أقصى لكل تسجيل`);
+  for (const f of [...files].slice(0, Math.max(0, room))) {
+    photoBusy++; redrawPhotos();
+    try {
+      const blob = await compressPhoto(f);
+      const id = await Photos.put(blob);
+      d.p.push(id);
+    } catch (e) { console.warn('photo', e); toast('تعذّر فتح الصورة. جرّب صورة أخرى (JPG أو PNG).'); }
+    finally { photoBusy--; if (draft === d) redrawPhotos(); }
+  }
 }
 function renderEntry() {
   const c = S.cars.find(x => x.id === draft.carId);
@@ -600,8 +809,15 @@ function renderEntry() {
   }
   const carsPick = S.cars.length > 1 && !editing ? `<div class="pick" aria-label="السيارة">${S.cars.map((x, i) => `<button class="chip" data-car-i="${i}" aria-pressed="${x.id === draft.carId}"><span class="dot" style="background:${esc(x.color)}"></span>${esc(x.name)}</button>`).join('')}</div>` : '';
   const secPick = !editing ? `<div class="pick" aria-label="القسم">${c.sections.map((x, i) => `<button class="chip" data-sec-i="${i}" aria-pressed="${x.id === draft.secId}">${icon(x.icon, 16)} ${esc(x.name)}</button>`).join('')}</div>` : '';
-  openSheet(editing ? `تعديل — ${s ? s.name : ''}` : 'تسجيل جديد', `${carsPick}${secPick}${fields}
+  const photos = s ? `<div class="field"><span>صور الفاتورة</span><div class="photos" id="phList"></div>
+    <div class="ph-btns"><button class="btn ghost" id="phCam">${uiIcon('camera')} تصوير</button><button class="btn ghost" id="phPick">${uiIcon('image')} من الصور</button></div></div>` : '';
+  openSheet(editing ? `تعديل — ${s ? s.name : ''}` : 'تسجيل جديد', `${carsPick}${secPick}${fields}${photos}
     ${s ? `<div class="btn-row" style="margin-top:6px">${editing ? `<button class="btn danger" id="eDel">حذف</button>` : ''}<button class="btn amber" id="eSave" style="flex:2">${editing ? 'حفظ التعديل' : 'حفظ'}</button></div>` : ''}`, b => {
+    if (b.querySelector('#phList')) {
+      redrawPhotos();
+      b.querySelector('#phCam').onclick = () => { const i = $('#photoCam'); i.value = ''; i.click(); };
+      b.querySelector('#phPick').onclick = () => { const i = $('#photoPick'); i.value = ''; i.click(); };
+    }
     b.querySelectorAll('[data-car-i]').forEach(x => x.onclick = () => { const t = S.cars[+x.dataset.carI]; if (!t) return; collect(b, s); draft.carId = t.id; draft.v = {}; S.activeCar = t.id; save(); render(); renderEntry(); });
     b.querySelectorAll('[data-sec-i]').forEach(x => x.onclick = () => { const t = c.sections[+x.dataset.secI]; if (!t) return; collect(b, s); draft.secId = t.id; draft.v = {}; renderEntry(); });
     b.querySelectorAll('input[data-ci]').forEach(i => i.oninput = () => { collect(b, s); updateCalc(b, c, s); });
@@ -633,9 +849,15 @@ function saveEntry(b, c, s) {
     else x = cleanValue(col.type, x);
     v[col.id] = x;
   }
-  if (!Object.values(v).some(x => x !== '')) { toast('أدخل بياناً واحداً على الأقل'); return; }
-  if (draft.rowId) { const r = s.rows.find(x => x.id === draft.rowId); if (r) r.v = v; }
-  else { if (s.rows.length >= LIMITS.rows) { toast('وصل القسم إلى الحد الأقصى للتسجيلات'); return; } s.rows.push({ id: uid(), t: Date.now(), v }); }
+  const p = cleanPhotoIds(draft.p);
+  if (!Object.values(v).some(x => x !== '') && !p.length) { toast('أدخل بياناً واحداً على الأقل'); return; }
+  if (photoBusy) { toast('انتظر حتى تُجهَّز الصورة'); return; }
+  if (draft.rowId) { const r = s.rows.find(x => x.id === draft.rowId); if (r) { r.v = v; if (p.length) r.p = p; else delete r.p; } }
+  else {
+    if (s.rows.length >= LIMITS.rows) { toast('وصل القسم إلى الحد الأقصى للتسجيلات'); return; }
+    const row = { id: uid(), t: Date.now(), v }; if (p.length) row.p = p;
+    s.rows.push(row);
+  }
   activeSec = s.id; save(); closeSheet(); render(); toast(draft.rowId ? 'حُفظ التعديل' : `سُجّل في ${s.name} — ${c.name}`);
 }
 
@@ -805,6 +1027,16 @@ function runPlans(plans, done, reopen) {
   if (lost) confirmBox(`سيُحذف ${lost} ${lost === 1 ? 'قيمة مسجّلة' : 'من القيم المسجّلة'} في بنود لم تعد موجودة. متابعة؟`, 'حفظ وحذف القيم', run, true, reopen);
   else run();
 }
+/* reminder fields of the section editor: by distance (needs an odometer item) and by time (needs a date item) */
+function remindHTML(work) {
+  const hasOdo = work.columns.some(x => x.type === 'odometer'), hasDate = work.columns.some(x => x.type === 'date');
+  if (!hasOdo && !hasDate) return '';
+  const both = hasOdo && hasDate;
+  return `<div class="sub-h">التذكير بالموعد القادم</div><div class="two">
+    ${hasOdo ? `<label class="field"><span>كل (كم)</span><input id="seRem" class="num" type="text" inputmode="numeric" value="${esc(String(Math.round(work.reminderKm || 0)))}"></label>` : ''}
+    ${hasDate ? `<label class="field"><span>${hasOdo ? 'أو كل (شهر)' : 'كل (شهر)'}</span><input id="seRemM" class="num" type="text" inputmode="numeric" value="${esc(String(work.reminderMonths || 0))}"></label>` : ''}
+    </div><p class="hint-p">0 لإيقافه.${both ? ' إن حدّدت الاثنين فالموعد بأيهما أسبق، كتبديل الزيت كل 7,500 كم أو 6 أشهر.' : ''} يظهر في الصفحة الرئيسية${isNative ? '، ويصلك إشعار قبله' : ''}.</p>`;
+}
 function openSectionEditor(id, isNew) {
   const c = car(); const s = c.sections.find(x => x.id === id); if (!s) return;
   const work = clone(s);
@@ -814,7 +1046,7 @@ function openSectionEditor(id, isNew) {
       <label class="field"><span>اسم القسم</span><input id="seName" maxlength="${LIMITS.label}" value="${esc(work.name)}"></label>
       <label class="field"><span>ملاحظة ثابتة (اختياري)</span><input id="seNote" maxlength="200" value="${esc(work.note || '')}" placeholder="مثلاً: Motorcraft 5W-30"></label>
       <div class="field"><span>الأيقونة</span><div class="swatches">${iconKeys.map(k => `<button class="swatch" data-ic="${k}" aria-pressed="${k === work.icon}" style="background:var(--bg);display:grid;place-items:center;color:var(--steel)">${icon(k, 18)}</button>`).join('')}</div></div>
-      ${work.columns.some(x => x.type === 'odometer') ? `<label class="field"><span>تذكير كل (كم) — 0 لإيقافه</span><input id="seRem" class="num" type="text" inputmode="numeric" value="${esc(nf(work.reminderKm || 0).replace(/,/g, ''))}"><div class="hint">يظهر في الصفحة الرئيسية كم باقي على الموعد القادم.</div></label>` : ''}
+      ${remindHTML(work)}
       <div class="sub-h">البنود (أعمدة الجدول)</div>
       ${work.columns.map((f, i) => colEditRow(f, i, work.columns.length, true)).join('')}
       <button class="btn ghost wide" id="seAdd">+ إضافة بند</button>
@@ -825,6 +1057,7 @@ function openSectionEditor(id, isNew) {
       work.name = str(b.querySelector('#seName').value, LIMITS.label).trim() || work.name;
       work.note = str(b.querySelector('#seNote').value, 200).trim();
       const r = b.querySelector('#seRem'); if (r) work.reminderKm = Math.min(1e6, Math.max(0, toNum(r.value) || 0));
+      const rm = b.querySelector('#seRemM'); if (rm) work.reminderMonths = Math.min(120, Math.max(0, Math.round(toNum(rm.value) || 0)));
       readItems(b, work.columns);
     };
     bindItems(b, work.columns, sync, () => draw(b));
@@ -833,7 +1066,7 @@ function openSectionEditor(id, isNew) {
     b.querySelector('#seSave').onclick = () => {
       sync();
       if (work.columns.some(x => x.type === 'distance') && !work.columns.some(x => x.type === 'odometer')) { toast('بند المسافة يحتاج بنداً من نوع العداد'); return; }
-      const meta = { name: work.name, icon: work.icon, reminderKm: work.reminderKm };
+      const meta = { name: work.name, icon: work.icon, reminderKm: work.reminderKm, reminderMonths: work.reminderMonths || 0 };
       const plans = [planSection(s, work.columns, { ...meta, note: work.note })];
       if (b.querySelector('#seAll').checked) S.cars.forEach(x => {
         if (x === c) return;
@@ -887,6 +1120,15 @@ function renderSettings() {
       <div class="btn-row"><button class="btn amber" id="sPdf">تقرير PDF</button><button class="btn" id="sExp">تصدير إكسل</button></div>
       <button class="btn ghost wide" id="sImp" style="margin-top:10px">استيراد / استرجاع</button>
     </div>
+    <div class="block"><h2>التذكيرات</h2>
+      ${isNative ? `<label class="check"><input type="checkbox" id="sNotify" ${S.settings.notify && notifPerm === 'granted' ? 'checked' : ''}> إشعارات على الهاتف قبل المواعيد</label>
+      <p class="hint-p" id="sNotifyState">${esc(notifStateText())}</p>`
+      : `<p class="hint-p" style="margin-top:0">في نسخة الويب لا يستطيع المتصفح إرسال تذكير والتطبيق مغلق، فأضف المواعيد إلى تقويم هاتفك لتصلك تنبيهاته في وقتها.</p>`}
+      <label class="field"><span>وقت التذكير</span><select id="sHour">${Array.from({ length: 17 }, (_, i) => i + 6).map(h => `<option value="${h}" ${h === S.settings.notifyHour ? 'selected' : ''}>${hourLabel(h)}</option>`).join('')}</select></label>
+      <label class="field"><span>التذكير بانتهاء التأمين والترخيص</span><select id="sLead">${LEAD_DAYS.map(d => `<option value="${d}" ${d === S.settings.expiryLead ? 'selected' : ''}>قبل الانتهاء بـ ${esc(nDays(d))}</option>`).join('')}</select></label>
+      <label class="field"><span>تذكير بتحديث العداد (لدقة مواعيد الكيلومترات)</span><select id="sNudge">${NUDGE_DAYS.map(d => `<option value="${d}" ${d === S.settings.odoNudge ? 'selected' : ''}>${d ? 'إن لم تُحدَّث قراءته منذ ' + esc(nDays(d)) : 'بدون'}</option>`).join('')}</select></label>
+      <div class="btn-row"><button class="btn ghost" id="sUpcoming">المواعيد القادمة</button><button class="btn ghost" id="sCal">${uiIcon('cal', 18)} إلى التقويم</button></div>
+    </div>
     <div class="block"><h2>أقسام ${esc(c.name)} وبنودها</h2>
       <div class="list">
         <button class="list-item" id="sCard"><span class="ic">${icon('doc')}</span><span class="grow"><b style="font-weight:500">بطاقة السيارة</b><small>${c.cardFields.map(f => esc(f.label)).join('، ')}</small></span></button>
@@ -915,6 +1157,459 @@ function renderSettings() {
   $('#sCur').onchange = e => { S.settings.currency = str(e.target.value, 12).trim() || 'د.ك'; save(); };
   $('#sDec').onchange = e => { S.settings = sanitizeSettings({ ...S.settings, decimals: +e.target.value }); save(); };
   $('#sTheme').onchange = e => { S.settings = sanitizeSettings({ ...S.settings, theme: e.target.value }); save(); applyTheme(); };
+  const setNum = (k, v) => { S.settings = sanitizeSettings({ ...S.settings, [k]: Number(v) }); save(); };
+  $('#sHour').onchange = e => setNum('notifyHour', e.target.value);
+  $('#sLead').onchange = e => setNum('expiryLead', e.target.value);
+  $('#sNudge').onchange = e => setNum('odoNudge', e.target.value);
+  $('#sUpcoming').onclick = openUpcoming;
+  $('#sCal').onclick = () => openCalendarSheet();
+  if ($('#sNotify')) $('#sNotify').onchange = e => { if (e.target.checked) enableNotifications(false); else { S.settings.notify = false; save(); renderSettings(); } };
+}
+const hourLabel = h => (h === 12 ? '12 ظهراً' : h < 12 ? `${h} صباحاً` : `${h - 12} ${h < 18 ? 'عصراً' : 'مساءً'}`);
+
+/* ======================================================================
+   Reminders: the list of upcoming dates, phone notifications (Android app)
+   and a calendar file (.ics) for the phone's own calendar (iPhone / web).
+   ====================================================================== */
+function allDue() {
+  const items = [];
+  for (const c of S.cars) items.push(...dueItems(c));
+  return items.sort((a, b) => ((a.date || '9999') < (b.date || '9999') ? -1 : (a.date || '9999') > (b.date || '9999') ? 1 : 0));
+}
+function dueRowHTML(it) {
+  const ci = S.cars.indexOf(it.c);
+  let title, sub, late;
+  if (it.type === 'svc') {
+    const x = it.x;
+    title = x.sec.name; late = x.late;
+    sub = esc(svcWhen(x)) + (x.late ? ' · متأخر' : x.due ? ` · ${esc(inDays(daysUntil(x.due)))}${x.est ? ' تقريباً' : ''}` : x.stale ? ' · حدّث العداد لتقدير الموعد' : '');
+  } else {
+    const e = it.e;
+    title = e.title; late = e.days < 0;
+    sub = `${e.days >= 0 ? 'ينتهي' : 'انتهى'} ${dateHTML(e.date)} · ${esc(inDays(e.days))}`;
+  }
+  return `<button class="list-item" data-car-i="${ci}"><span class="ic" style="${late ? 'color:var(--bad)' : ''}">${it.type === 'svc' ? icon(it.x.sec.icon) : icon('shield')}</span>
+    <span class="grow"><b style="font-weight:500">${esc(title)}${S.cars.length > 1 ? ` <span class="car-tag"><span class="dot" style="background:${esc(it.c.color)}"></span>${esc(it.c.name)}</span>` : ''}</b><small>${sub}</small></span></button>`;
+}
+function openUpcoming() {
+  const items = allDue();
+  openSheet('المواعيد القادمة', `
+    ${items.length ? `<div class="list">${items.map(dueRowHTML).join('')}</div>` : `<div class="empty"><b>لا توجد مواعيد بعد</b>حدّد في قسم الزيوت مثلاً «التذكير كل كذا كم أو شهر» (الإعدادات ← القسم)، أو أضف تاريخ انتهاء التأمين.</div>`}
+    ${isNative ? `<p class="hint-p">${esc(notifStateText())}</p>` : ''}
+    <button class="btn ${isNative ? 'ghost' : 'amber'} wide" id="upCal" style="margin-top:12px">${uiIcon('cal', 18)} إضافة المواعيد إلى التقويم</button>`, b => {
+    b.querySelectorAll('[data-car-i]').forEach(x => x.onclick = () => { const t = S.cars[+x.dataset.carI]; if (!t) return; S.activeCar = t.id; save(); closeSheet(); rolledFor = null; go('home'); });
+    b.querySelector('#upCal').onclick = () => openCalendarSheet();
+  });
+}
+
+/* ---------- phone notifications (Android app only) ---------- */
+let notifPerm = null;            /* 'granted' | 'denied' | 'prompt' | … once known */
+let notifTimer = null, notifSig = null;
+const notifPlugin = () => (isNative ? plug('LocalNotifications') : null);
+function notifStateText() {
+  if (!S.settings.notify) return 'الإشعارات متوقفة. تظهر المواعيد هنا وفي الصفحة الرئيسية فقط.';
+  if (notifPerm === 'granted') return `تصلك الإشعارات الساعة ${hourLabel(S.settings.notifyHour)}: قبل الموعد بأسبوع، وفي يومه، وبعده بأسبوع إن لم تسجّله.`;
+  if (notifPerm === 'denied') return 'الإشعارات مرفوضة في إعدادات الهاتف. فعّلها من: الإعدادات ← التطبيقات ← سيّارتي ← الإشعارات.';
+  return 'اسمح للتطبيق بالإشعارات لتصلك التذكيرات.';
+}
+/* time of an alert: that day at the chosen hour (local time) */
+const alertAt = iso => { const [y, m, d] = isoParts(iso); return new Date(y, m - 1, d, S.settings.notifyHour, 0, 0, 0).getTime(); };
+/* every notification to schedule, from the data alone (so planning again gives the same list) */
+function planAlerts(now = Date.now()) {
+  const out = [];
+  const push = (key, iso, title, body, carId) => { if (!iso) return; const at = alertAt(iso); if (at > now + 60e3) out.push({ key, at, title, body, carId }); };
+  for (const c of S.cars) {
+    for (const it of dueItems(c)) {
+      const k = `${c.id}:${it.key}`;
+      if (it.type === 'svc') {
+        const x = it.x;
+        if (!x.due) continue;
+        /* the date is either the time limit or the day the distance should be reached (an estimate) */
+        const at = x.est ? `عند ${nf(x.km.next)} كم` : `في ${fmtDate(x.due)}`;
+        if (x.late) {   /* already overdue: one reminder a week after it fell due, if that is still ahead */
+          push(k + ':late', addDaysISO(x.due, 7), `فات موعد ${x.sec.name} — ${c.name}`, `كان الموعد ${at}. إن أتممته فسجّله ليُحسب الموعد التالي.`, c.id);
+          continue;
+        }
+        push(k + ':soon', addDaysISO(x.due, -7), `اقترب موعد ${x.sec.name} — ${c.name}`, `بعد أسبوع تقريباً: ${svcWhen(x)}.`, c.id);
+        push(k + ':due', x.due, `حان موعد ${x.sec.name} — ${c.name}`,
+          x.est ? `حسب معدل قيادتك يصل العداد اليوم تقريباً إلى ${nf(x.km.next)} كم. سجّل العملية بعد إتمامها.` : `اليوم موعد ${x.sec.name} (${fmtDate(x.due)}). سجّل العملية بعد إتمامها.`, c.id);
+        push(k + ':late', addDaysISO(x.due, 7), `فات موعد ${x.sec.name} — ${c.name}`,
+          `كان الموعد ${at}. إن أتممته فسجّله ليُحسب الموعد التالي${x.est ? '، أو حدّث قراءة العداد' : ''}.`, c.id);
+      } else {
+        const e = it.e, lead = S.settings.expiryLead;
+        push(k + ':lead', addDaysISO(e.date, -lead), `${e.title} — ${c.name}`, `ينتهي بعد ${nDays(lead)}، في ${fmtDate(e.date)}.`, c.id);
+        if (lead > 7) push(k + ':week', addDaysISO(e.date, -7), `${e.title} — ${c.name}`, `ينتهي بعد أسبوع، في ${fmtDate(e.date)}.`, c.id);
+        push(k + ':day', e.date, `${e.title} — ${c.name}`, `ينتهي اليوم (${fmtDate(e.date)}).`, c.id);
+      }
+    }
+    /* a fresh odometer reading keeps the distance reminders right: ask every N days without one */
+    const N = S.settings.odoNudge, last = lastDated(c);
+    if (N > 0 && last && c.sections.some(s => s.reminderKm > 0 && colOf(s, 'odometer'))) {
+      let k = 1, d = addDaysISO(last.date, N);
+      while (alertAt(d) <= now + 60e3 && k < 400) d = addDaysISO(last.date, N * ++k);
+      push(`${c.id}:odo`, d, `حدّث قراءة العداد — ${c.name}`, `آخر قراءة مسجّلة كانت قبل ${nDays(N * k)}. تحديثها يُبقي مواعيد الزيت دقيقة.`, c.id);
+    }
+  }
+  out.sort((a, b) => a.at - b.at);
+  const list = out.slice(0, 60), used = new Set();
+  for (const a of list) { let id = hashId(a.key); while (used.has(id)) id = (id % 2147483646) + 1; used.add(id); a.id = id; }
+  return list;
+}
+function scheduleNotifSync(delay = 1500) {
+  if (!notifPlugin()) return;
+  clearTimeout(notifTimer);
+  notifTimer = setTimeout(syncNotifications, delay);
+}
+/* one sync at a time, so an older plan can never be scheduled after a newer one */
+let notifRun = Promise.resolve();
+function syncNotifications(force) {
+  notifRun = notifRun.then(() => runNotifSync(force)).catch(e => console.warn('notifications', e));
+  return notifRun;
+}
+async function runNotifSync(force) {
+  const ln = notifPlugin(); if (!ln) return;
+  try { notifPerm = (await ln.checkPermissions()).display; } catch (e) { notifPerm = 'denied'; }
+  const list = S.settings.notify && notifPerm === 'granted' ? planAlerts() : [];
+  const sig = JSON.stringify(list.map(a => [a.id, a.at, a.title, a.body]));
+  if (sig === notifSig && !force) return;
+  try {
+    const pend = await ln.getPending();
+    const old = ((pend && pend.notifications) || []).map(n => ({ id: n.id }));
+    if (old.length) await ln.cancel({ notifications: old });
+    if (list.length) await ln.schedule({ notifications: list.map(a => ({
+      id: a.id, title: a.title, body: a.body, largeBody: a.body, channelId: 'reminders',
+      smallIcon: 'ic_stat_sayyarati', iconColor: '#E9A23B',
+      schedule: { at: new Date(a.at), allowWhileIdle: true }, isExactNotification: false,
+      extra: { car: a.carId }
+    })) });
+    notifSig = sig;
+  } catch (e) { console.warn('notifications', e); notifSig = null; }
+}
+/* asks Android for the notification permission (Android 13+), then schedules */
+async function enableNotifications(fromHome) {
+  const ln = notifPlugin(); if (!ln) return;
+  S.settings.notify = true; save();
+  try { notifPerm = (await ln.requestPermissions()).display; } catch (e) { notifPerm = 'denied'; }
+  if (notifPerm === 'granted') { toast('ستصلك التذكيرات على الهاتف'); await syncNotifications(true); }
+  else {
+    if (fromHome) S.settings.notify = false;
+    save();
+    toast('لم يُسمح بالإشعارات. يمكنك تفعيلها من إعدادات الهاتف ← التطبيقات ← سيّارتي');
+  }
+  render();
+}
+async function initNotifications() {
+  const ln = notifPlugin(); if (!ln) return;
+  try {
+    await ln.createChannel({ id: 'reminders', name: 'التذكيرات', description: 'مواعيد الزيت والصيانة وانتهاء التأمين والترخيص', importance: 4, visibility: 0, vibration: true });
+  } catch (e) { /* older Android: no channels */ }
+  ln.addListener('localNotificationActionPerformed', ev => {
+    const id = ev && ev.notification && ev.notification.extra && ev.notification.extra.car;
+    if (typeof id === 'string' && S.cars.some(c => c.id === id) && S.activeCar !== id) { S.activeCar = id; save(); rolledFor = null; }
+    if (!sheetOpen()) go('home'); else render();
+  });
+  await syncNotifications(true);
+  if (view === 'home' || view === 'settings') render();
+}
+
+/* ---------- calendar file (.ics) ---------- */
+const ICS_CACHE = 'sayyarati-ics', ICS_PATH = 'sayyarati-reminders.ics';
+const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+/* text values: line breaks become \n and other control characters spaces, so a value can never start a new line */
+const icsText = s => String(s).replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r\n|\r|\n/g, '\\n').replace(/[\u0000-\u001F\u007F\u2028\u2029]/g, ' ');
+/* lines longer than 75 bytes continue on the next line after a space (RFC 5545), never inside a character */
+function icsFold(line) {
+  const enc = new TextEncoder(), out = [];
+  let cur = '', bytes = 0;
+  for (const ch of line) {
+    const b = enc.encode(ch).length;
+    if (bytes + b > (out.length ? 74 : 75)) { out.push(cur); cur = ''; bytes = 0; }
+    cur += ch; bytes += b;
+  }
+  out.push(cur);
+  return out.join('\r\n ');
+}
+/* alarm `days` before an all-day event, at the reminder hour */
+function icsTrigger(days) {
+  let mins = days * 1440 - S.settings.notifyHour * 60;
+  const before = mins > 0; mins = Math.abs(mins);
+  const d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;
+  return (before ? '-' : '') + 'P' + (d ? d + 'D' : '') + (h || m || !d ? 'T' + (h ? h + 'H' : '') + (m || (!h && !d) ? m + 'M' : '') : '');
+}
+function buildIcs(cars) {
+  const today = todayISO(), lead = S.settings.expiryLead;
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  const L = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Sayyarati//Car log//AR', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH', 'X-WR-CALNAME:' + icsText('سيّارتي')];
+  let count = 0;
+  for (const c of cars) for (const it of dueItems(c)) {
+    if (!it.date || it.date < today) continue;
+    let summary, desc, alarms;
+    if (it.type === 'svc') {
+      summary = `موعد ${it.x.sec.name} — ${c.name}`;
+      desc = `${svcWhen(it.x)}.${it.x.est ? ' التاريخ تقديري حسب معدل قيادتك.' : ''} من تطبيق سيّارتي.`;
+      alarms = [7, 0];
+    } else {
+      summary = `${EXPIRY_RE.test(it.e.title) ? it.e.title : 'ينتهي: ' + it.e.title} — ${c.name}`;
+      desc = `تاريخ الانتهاء ${fmtDate(it.e.date)}. من تطبيق سيّارتي.`;
+      alarms = [...new Set([lead, 7, 0])].filter(d => d <= lead);
+    }
+    /* one id per item and date: the iPhone calendar does not take a new date for an event it already has,
+       so a moved date (after an oil change, say) comes as a new event */
+    L.push('BEGIN:VEVENT', `UID:${c.id}-${hashId(it.key).toString(36)}-${it.date.replace(/-/g, '')}@sayyarati`, `DTSTAMP:${stamp}`, 'SEQUENCE:0',
+      `DTSTART;VALUE=DATE:${it.date.replace(/-/g, '')}`, `DTEND;VALUE=DATE:${addDaysISO(it.date, 1).replace(/-/g, '')}`,
+      'SUMMARY:' + icsText(summary), 'DESCRIPTION:' + icsText(desc), 'TRANSP:TRANSPARENT');
+    for (const d of alarms) L.push('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:' + icsText(summary), 'TRIGGER:' + icsTrigger(d), 'END:VALARM');
+    L.push('END:VEVENT');
+    count++;
+  }
+  L.push('END:VCALENDAR');
+  return { text: L.map(icsFold).join('\r\n') + '\r\n', count };
+}
+function openCalendarSheet() {
+  const { count } = buildIcs(S.cars);
+  const ios = !isNative && isIOS();
+  openSheet('إضافة المواعيد إلى التقويم', `
+    <p style="margin:0 0 12px">${count ? `${count === 1 ? 'موعد قادم واحد' : count === 2 ? 'موعدان قادمان' : `${nf(count)} مواعيد قادمة`} يُضاف إلى تقويم هاتفك، مع تنبيه قبل كل موعد بأسبوع وفي يومه${S.settings.expiryLead > 7 ? `، وقبل انتهاء التأمين والترخيص بـ ${esc(nDays(S.settings.expiryLead))}` : ''}.` : 'لا توجد مواعيد قادمة بتاريخ معروف بعد.'}</p>
+    <p class="hint-p">المواعيد المحسوبة بالكيلومترات تقديرية حسب معدل قيادتك. بعد كل تبديل زيت أو تجديد أضف المواعيد مرة أخرى، واحذف من التقويم الموعد القديم إن تغيّر تاريخه.</p>
+    ${count ? `<button class="btn amber wide" id="calGo">${ios ? 'إضافة إلى تقويم الآيفون' : isNative ? 'مشاركة ملف التقويم' : 'تنزيل ملف التقويم'}</button>
+    ${!isNative ? `<button class="btn ghost wide" id="calShare" style="margin-top:10px">مشاركة الملف</button>` : ''}
+    ${ios ? `<p class="hint-p" style="margin-top:12px">إن لم تظهر نافذة «إضافة إلى التقويم»: اختر «مشاركة الملف» ← «حفظ في الملفات»، ثم افتح الملف من تطبيق الملفات.</p>` : ''}` : ''}`, b => {
+    const run = mode => exportCalendar(mode).catch(e => { console.error(e); toast('تعذّر إنشاء ملف التقويم'); });
+    if (b.querySelector('#calGo')) b.querySelector('#calGo').onclick = () => run(ios ? 'ios' : isNative ? 'share' : 'dl');
+    if (b.querySelector('#calShare')) b.querySelector('#calShare').onclick = () => run('share');
+  });
+}
+async function exportCalendar(mode) {
+  const { text, count } = buildIcs(S.cars);
+  if (!count) { toast('لا توجد مواعيد قادمة'); return false; }
+  const blob = new Blob([text], { type: 'text/calendar;charset=utf-8' });
+  const name = `مواعيد-سيارتي-${todayISO()}.ics`;
+  /* iPhone: Safari adds events to the calendar when it opens a calendar file served by the site; the
+     service worker serves this one from the app's own storage (nothing leaves the phone) */
+  if (mode === 'ios' && window.caches && navigator.serviceWorker && navigator.serviceWorker.controller) {
+    try {
+      const cache = await caches.open(ICS_CACHE);
+      await cache.put(new URL(ICS_PATH, location.href).href, new Response(blob, { headers: {
+        'Content-Type': 'text/calendar; charset=utf-8; method=PUBLISH', 'Content-Disposition': 'inline; filename="sayyarati.ics"', 'Cache-Control': 'no-store' } }));
+      location.href = ICS_PATH;
+      return true;
+    } catch (e) { console.warn('ics via service worker', e); }
+  }
+  return deliver(blob, name, mode === 'share' ? 'share' : 'dl', 'إضافة المواعيد إلى التقويم');
+}
+
+/* ======================================================================
+   Invoice photos. A photo is made smaller and saved again as a new JPEG (which also drops the
+   camera's hidden data, such as where it was taken), then kept on the device: in the app's own
+   files on Android, in the browser's storage (IndexedDB) on the web. Entries keep only photo ids.
+   ====================================================================== */
+const PHOTO_MAX = 1600, PHOTO_Q = 0.78;
+const isJpeg = u8 => !!u8 && u8.length > 8 && u8[0] === 0xFF && u8[1] === 0xD8 && u8[2] === 0xFF;
+/* width and height from a JPEG's frame header (null when it is not a well-formed JPEG) */
+function jpegSize(u8) {
+  if (!isJpeg(u8)) return null;
+  let i = 2;
+  while (i + 9 < u8.length) {
+    if (u8[i] !== 0xFF) return null;
+    const m = u8[i + 1];
+    if (m === 0xFF) { i++; continue; }
+    if (m === 0x01 || (m >= 0xD0 && m <= 0xD7)) { i += 2; continue; }
+    if (m === 0xD9 || m === 0xDA) return null;            // end / image data before any frame header
+    const len = (u8[i + 2] << 8) | u8[i + 3];
+    if (len < 2) return null;
+    if (m >= 0xC0 && m <= 0xCF && m !== 0xC4 && m !== 0xC8 && m !== 0xCC) {
+      const h = (u8[i + 5] << 8) | u8[i + 6], w = (u8[i + 7] << 8) | u8[i + 8];
+      return w > 0 && h > 0 ? { w, h } : null;
+    }
+    i += 2 + len;
+  }
+  return null;
+}
+async function decodeImage(blob) {
+  if (window.createImageBitmap) {
+    try { const b = await createImageBitmap(blob, { imageOrientation: 'from-image' }); return { src: b, w: b.width, h: b.height, done: () => b.close && b.close() }; }
+    catch (e) { /* older browsers: through an <img> */ }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image(); img.src = url; await img.decode();
+    return { src: img, w: img.naturalWidth, h: img.naturalHeight, done: () => URL.revokeObjectURL(url) };
+  } catch (e) { URL.revokeObjectURL(url); throw e; }
+}
+async function compressPhoto(file) {
+  if (!file || !file.size || file.size > 60 * 1024 * 1024) throw new Error('not a usable image');
+  const im = await decodeImage(file);
+  try {
+    if (!im.w || !im.h || im.w * im.h > 150e6) throw new Error('image size');
+    const k = Math.min(1, PHOTO_MAX / Math.max(im.w, im.h));
+    const w = Math.max(1, Math.round(im.w * k)), h = Math.max(1, Math.round(im.h * k));
+    const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+    const g = cv.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);                 // transparent PNGs get a white page
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = 'high';
+    g.drawImage(im.src, 0, 0, w, h);
+    const enc = q => new Promise(r => cv.toBlob(r, 'image/jpeg', q));
+    let out = await enc(PHOTO_Q);
+    if (out && out.size > 700e3) out = await enc(0.6);
+    cv.width = cv.height = 0;
+    if (!out || !out.size) throw new Error('encode failed');
+    return out;
+  } finally { im.done(); }
+}
+/* writes a file in pieces, so a large file never travels to Android as one huge message */
+async function writeChunked(fs, path, blob, directory) {
+  const CH = 3 * 1024 * 1024;
+  let res = null;
+  for (let off = 0; off === 0 || off < blob.size; off += CH) {
+    const data = bufToB64(await blob.slice(off, off + CH).arrayBuffer());
+    if (off === 0) res = await fs.writeFile({ path, data, directory, recursive: true });
+    else await fs.appendFile({ path, data, directory });
+  }
+  return res;
+}
+const Photos = (() => {
+  const urls = new Map();                 /* object URLs shown in the open sheet (web) */
+  let dbp = null, base = null;
+  const db = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open('sayyarati-photos', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('photos', { keyPath: 'id' });
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => { dbp = null; rej(r.error); };
+  }));
+  const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const store = async mode => (await db()).transaction('photos', mode).objectStore('photos');
+  const fs = () => plug('Filesystem');
+  const fileUrl = async id => {
+    if (!base) base = window.Capacitor.convertFileSrc((await fs().getUri({ path: 'photos', directory: 'DATA' })).uri);
+    return `${base}/${id}.jpg`;
+  };
+  const api = {
+    async put(blob, id = uid()) {
+      if (!ID_RE.test(id)) throw new Error('bad photo id');
+      if (isNative) await writeChunked(fs(), `photos/${id}.jpg`, blob, 'DATA');
+      else await req((await store('readwrite')).put({ id, t: Date.now(), size: blob.size, blob }));
+      return id;
+    },
+    async blob(id) {
+      if (!ID_RE.test(String(id))) return null;
+      if (isNative) {
+        try { const r = await fetch(await fileUrl(id)); return r.ok ? await r.blob() : null; } catch (e) { return null; }
+      }
+      const rec = await req((await store('readonly')).get(id));
+      return rec && rec.blob instanceof Blob ? rec.blob : null;
+    },
+    async url(id, keep = true) {
+      if (!ID_RE.test(String(id))) return null;
+      if (isNative) return fileUrl(id);
+      if (keep && urls.has(id)) return urls.get(id);
+      const b = await api.blob(id); if (!b) return null;
+      const u = URL.createObjectURL(b);
+      if (keep) urls.set(id, u);
+      return u;
+    },
+    async del(id) {
+      if (!ID_RE.test(String(id))) return;
+      if (isNative) await fs().deleteFile({ path: `photos/${id}.jpg`, directory: 'DATA' }).catch(() => {});
+      else await req((await store('readwrite')).delete(id));
+    },
+    async list() {
+      if (isNative) {
+        try {
+          const r = await fs().readdir({ path: 'photos', directory: 'DATA' });
+          return (r.files || []).map(f => ({ id: String(f.name || '').replace(/\.jpg$/, ''), t: Number(f.mtime) || 0, size: Number(f.size) || 0 })).filter(x => ID_RE.test(x.id));
+        } catch (e) { return []; }
+      }
+      const all = await req((await store('readonly')).getAll());
+      return all.filter(x => x && typeof x.id === 'string').map(x => ({ id: x.id, t: x.t || 0, size: x.size || 0 }));
+    },
+    release() { for (const u of urls.values()) URL.revokeObjectURL(u); urls.clear(); }
+  };
+  return api;
+})();
+const releaseUrls = () => Photos.release();
+const usedPhotoIds = (cars = S.cars) => { const u = new Set(); for (const c of cars) for (const s of c.sections) for (const r of s.rows) for (const id of r.p || []) u.add(id); return u; };
+/* photos no entry uses any more (entry deleted, photo removed, restore replaced the data) */
+async function gcPhotos() {
+  try {
+    const last = Number(localStorage.getItem('sayyarati.photoGC')) || 0;
+    if (Date.now() - last < 864e5) return;
+    const used = usedPhotoIds();
+    for (const p of await Photos.list()) if (!used.has(p.id) && Date.now() - p.t > 6 * 3600e3) await Photos.del(p.id);
+    localStorage.setItem('sayyarati.photoGC', String(Date.now()));
+  } catch (e) { console.warn('photo cleanup', e); }
+}
+/* photos of one car (or all), oldest entry first: [{id, c, s, r}] */
+function photoItems(cars) {
+  const out = [];
+  for (const c of cars) for (const s of c.sections) for (const r of chrono(s)) for (const id of r.p || []) out.push({ id, c, s, r });
+  return out;
+}
+/* "الزيوت · تبديل زيت · 01.04.2026 · 12,500 كم" */
+function photoCaption(s, r) {
+  const t = textCol(s), d = colOf(s, 'date'), o = colOf(s, 'odometer');
+  const parts = [s.name];
+  if (t && r.v[t.id]) parts.push(String(r.v[t.id]).slice(0, 80));
+  if (d && r.v[d.id]) parts.push(fmtDate(r.v[d.id]));
+  if (o && toNum(r.v[o.id]) != null) parts.push(`${nf(r.v[o.id])} كم`);
+  return parts.join(' · ');
+}
+
+/* ---------- photo viewer (above the entry form) ---------- */
+let viewer = null;
+async function openViewer(ids, i, onDelete) {
+  if (!ids.length) return;
+  viewer = { ids, i: Math.max(0, Math.min(ids.length - 1, i)), onDelete, url: null, arm: 0 };
+  $('#viewer').classList.add('on');
+  await showViewerImage();
+}
+async function showViewerImage() {
+  const v = viewer; if (!v) return;
+  const img = $('#vImg');
+  if (v.url && v.url.startsWith('blob:')) URL.revokeObjectURL(v.url);
+  v.url = null; img.removeAttribute('src');
+  $('#vBox').classList.remove('missing', 'z');
+  const many = v.ids.length > 1;
+  $('#vCount').textContent = many ? `${v.i + 1} / ${v.ids.length}` : '';
+  $('#vPrev').classList.toggle('hidden', !many); $('#vNext').classList.toggle('hidden', !many);
+  $('#vDel').classList.toggle('hidden', !v.onDelete);
+  clearTimeout(v.arm); v.arm = 0; $('#vDelT').textContent = 'حذف';
+  const u = await Photos.url(v.ids[v.i], false).catch(() => null);
+  if (viewer !== v) { if (u && u.startsWith('blob:')) URL.revokeObjectURL(u); return; }
+  v.url = u;
+  if (u) img.src = u; else $('#vBox').classList.add('missing');
+}
+function closeViewer() {
+  if (!viewer) return;
+  clearTimeout(viewer.arm);
+  if (viewer.url && viewer.url.startsWith('blob:')) URL.revokeObjectURL(viewer.url);
+  viewer = null;
+  $('#viewer').classList.remove('on');
+  $('#vImg').removeAttribute('src');
+}
+const viewerOpen = () => !!viewer;
+function initViewer() {
+  $('#vClose').onclick = closeViewer;
+  $('#vImg').onclick = () => $('#vBox').classList.toggle('z');
+  $('#vImg').onerror = () => { if (viewer && viewer.url) $('#vBox').classList.add('missing'); };
+  $('#vPrev').onclick = () => { if (!viewer) return; viewer.i = (viewer.i - 1 + viewer.ids.length) % viewer.ids.length; showViewerImage(); };
+  $('#vNext').onclick = () => { if (!viewer) return; viewer.i = (viewer.i + 1) % viewer.ids.length; showViewerImage(); };
+  $('#vShare').onclick = async () => {
+    if (!viewer) return;
+    const b = await Photos.blob(viewer.ids[viewer.i]);
+    if (!b) { toast('الصورة غير موجودة على هذا الجهاز'); return; }
+    try { await deliver(b, `فاتورة-${todayISO()}-${viewer.i + 1}.jpg`, 'share', 'مشاركة الصورة'); } catch (e) { toast('تعذّرت مشاركة الصورة'); }
+  };
+  /* delete asks twice: the first tap arms the button for a few seconds */
+  $('#vDel').onclick = () => {
+    const v = viewer; if (!v || !v.onDelete) return;
+    if (!v.arm) { v.arm = setTimeout(() => { if (viewer === v) { v.arm = 0; $('#vDelT').textContent = 'حذف'; } }, 3500); $('#vDelT').textContent = 'تأكيد الحذف'; return; }
+    clearTimeout(v.arm); v.arm = 0;
+    const id = v.ids[v.i]; v.onDelete(id); v.ids = v.ids.filter(x => x !== id);
+    if (!v.ids.length) { closeViewer(); return; }
+    v.i = Math.min(v.i, v.ids.length - 1); showViewerImage();
+  };
+  $('#photoCam').onchange = e => addPhotoFiles(e.target.files);
+  $('#photoPick').onchange = e => addPhotoFiles(e.target.files);
 }
 
 /* ======================================================================
@@ -953,11 +1648,11 @@ const colLetter = n => { let s = ''; while (n > 0) { const m = (n - 1) % 26; s =
 const moneyFmt = () => S.settings.decimals ? '#,##0.' + '0'.repeat(S.settings.decimals) : '#,##0';
 const argb = hex => 'FF' + (COLOR_RE.test(hex) ? hex.slice(1).toUpperCase() : 'E9A23B');
 
-async function buildWorkbook(cars) {
+async function buildWorkbook(cars, withPhotos) {
   const ExcelJS = await loadExcel();
   const wb = new ExcelJS.Workbook();
   wb.creator = 'سيّارتي'; wb.created = new Date();
-  const used = new Set(['_sayyarati']);
+  const used = new Set(['_sayyarati', '_sayyarati_photos']);
   const multi = cars.length > 1;
   const font = (o = {}) => ({ name: 'Arial', size: 11, ...o });
 
@@ -1028,6 +1723,8 @@ async function buildWorkbook(cars) {
       sh.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 };
     }
   }
+  /* -- invoice photos: a sheet to look at them, and a hidden one that ties each photo to its id (for restoring) -- */
+  if (withPhotos) await addPhotoSheets(wb, cars, used, font);
   /* -- restore data (hidden sheet) -- */
   const hid = wb.addWorksheet('_sayyarati', { state: 'veryHidden' });
   const payload = JSON.stringify({ app: 'sayyarati', v: 1, exported: new Date().toISOString(), settings: S.settings, cars })
@@ -1035,6 +1732,63 @@ async function buildWorkbook(cars) {
   hid.getCell(1, 1).value = 'sayyarati-backup-v1';
   for (let i = 0, row = 2; i < payload.length; i += 30000, row++) hid.getCell(row, 1).value = payload.slice(i, i + 30000);
   return wb;
+}
+async function addPhotoSheets(wb, cars, used, font) {
+  const items = photoItems(cars);
+  if (!items.length) return 0;
+  const gal = wb.addWorksheet(sheetName('صور الفواتير', used), { views: [{ rightToLeft: true, state: 'frozen', ySplit: 2, showGridLines: false }], properties: { tabColor: { argb: XL.amber } } });
+  const map = wb.addWorksheet('_sayyarati_photos', { state: 'veryHidden' });
+  map.getCell(1, 1).value = 'sayyarati-photos-v1';
+  gal.columns = [{ width: 5 }, { width: 16 }, { width: 16 }, { width: 30 }, { width: 12 }, { width: 11 }, { width: 31 }];
+  gal.mergeCells(1, 1, 1, 7);
+  const t = gal.getCell(1, 1); t.value = 'صور الفواتير';
+  t.font = font({ size: 15, bold: true, color: { argb: XL.white } }); t.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL.ink } }; t.alignment = { vertical: 'middle', horizontal: 'center' };
+  gal.getRow(1).height = 32;
+  const hr = gal.getRow(2); hr.height = 24;
+  ['م', 'السيارة', 'القسم', 'البيان', 'التاريخ', 'العداد', 'الصورة'].forEach((h, i) => { const cell = hr.getCell(i + 1); cell.value = h; cell.font = font({ bold: true, color: { argb: 'FF1B1306' } }); cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL.amber } }; cell.alignment = { horizontal: 'center', vertical: 'middle' }; cell.border = border; });
+  let n = 0;
+  for (const it of items) {
+    const b = await Photos.blob(it.id).catch(() => null); if (!b) continue;
+    const u8 = new Uint8Array(await b.arrayBuffer());
+    const sz = jpegSize(u8); if (!sz) continue;
+    const imgId = wb.addImage({ buffer: u8.buffer, extension: 'jpeg' });
+    const k = Math.min(200 / sz.w, 280 / sz.h), w = Math.round(sz.w * k), h = Math.round(sz.h * k);
+    const row = n + 3, R = gal.getRow(row);
+    R.height = Math.round(h * 0.75) + 10;
+    const tc = textCol(it.s), dc = colOf(it.s, 'date'), oc = colOf(it.s, 'odometer');
+    R.getCell(1).value = n + 1;
+    R.getCell(2).value = it.c.name;
+    R.getCell(3).value = it.s.name;
+    setCell(R.getCell(4), 'text', tc ? it.r.v[tc.id] : '');
+    setCell(R.getCell(5), 'date', dc ? it.r.v[dc.id] : '');
+    setCell(R.getCell(6), 'odometer', oc ? it.r.v[oc.id] : '');
+    for (let j = 1; j <= 7; j++) { const cell = R.getCell(j); cell.border = border; cell.font = font(); cell.alignment = { horizontal: j === 4 ? 'right' : 'center', vertical: 'middle', wrapText: true }; }
+    gal.addImage(imgId, { tl: { col: 6.04, row: row - 1 + 0.06 }, ext: { width: w, height: h }, editAs: 'oneCell' });
+    map.getCell(n + 2, 1).value = it.id;
+    map.addImage(imgId, { tl: { col: 1, row: n + 1 }, ext: { width: 4, height: 4 }, editAs: 'oneCell' });
+    n++;
+  }
+  gal.pageSetup = { orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 };
+  return n;
+}
+/* the photos stored in a backup file: id → JPEG bytes (each checked; anything else is skipped) */
+function readBackupPhotos(wb) {
+  const out = new Map();
+  const ws = wb.getWorksheet('_sayyarati_photos');
+  if (!ws || !String(cellVal(ws.getCell(1, 1))).startsWith('sayyarati-photos')) return out;
+  for (const im of ws.getImages()) {
+    const row = Math.round(Number(im && im.range && im.range.tl && im.range.tl.nativeRow)) + 1;
+    if (!(row >= 2)) continue;
+    const id = String(cellVal(ws.getCell(row, 1)) || '');
+    if (!ID_RE.test(id) || id in Object.prototype || out.has(id)) continue;
+    const media = wb.getImage(im.imageId);
+    if (!media || !media.buffer || !(media.buffer.length <= LIMITS.photoBytes)) continue;
+    const u8 = media.buffer instanceof Uint8Array ? media.buffer : new Uint8Array(media.buffer);
+    if (!jpegSize(u8)) continue;
+    out.set(id, u8);
+    if (out.size > LIMITS.photos) throw new ImportError('too-many');
+  }
+  return out;
 }
 /* values are written as typed cells; text always stays text (never a formula) */
 function setCell(cell, type, v) {
@@ -1051,38 +1805,60 @@ function openBackup(carId) {
   if (!S.cars.length) return;
   let pdfCar = S.cars.find(x => x.id === carId) || car();
   const c = car();
+  const mb = n => (n >= 1024 * 1024 ? `${nf(n / 1024 / 1024, n < 10 * 1024 * 1024 ? 1 : 0)} ميجابايت` : `${nf(Math.max(1, n / 1024))} كيلوبايت`);
   openSheet('تصدير ومشاركة', `
     <div class="sub-h" style="margin-top:4px">تقرير PDF لسيارة</div>
     <p style="margin:0 0 12px;color:var(--muted);font-size:14px">تقرير منسّق لسيارة واحدة: بطاقتها وملخص مصاريفها وكل سجلاتها، للطباعة أو لإرساله إلى مشترٍ أو ورشة.</p>
     ${S.cars.length > 1 ? `<div class="pick" aria-label="السيارة">${S.cars.map((x, i) => `<button class="chip" data-pc="${i}" aria-pressed="${x.id === pdfCar.id}"><span class="dot" style="background:${esc(x.color)}"></span>${esc(x.name)}</button>`).join('')}</div>` : ''}
     <label class="check"><input type="checkbox" id="pHide"> إخفاء المبالغ والأسعار (عند مشاركة التقرير مع مشترٍ مثلاً)</label>
+    <label class="check" id="pPhWrap"><input type="checkbox" id="pPhotos" checked> إرفاق صور الفواتير (<span id="pPhN"></span>)</label>
+    <p class="hint-p hidden" id="pPhHint">صور الفواتير قد تُظهر المبالغ، فلن تُرفق إلا إن اخترتها.</p>
     <button class="btn amber wide" id="pShare">${isNative ? 'إنشاء التقرير ومشاركته' : 'إنشاء التقرير ومشاركته / حفظه'}</button>
     ${!isNative ? `<button class="btn ghost wide" id="pDl" style="margin-top:10px">تنزيل التقرير فقط</button>` : ''}
     <div class="sub-h">نسخة احتياطية Excel</div>
     <p style="margin:0 0 14px;color:var(--muted);font-size:14px">ستظهر قائمة المشاركة: اختر «Drive» للحفظ في جوجل درايف، أو «الملفات»، أو أرسله بالواتساب أو البريد.</p>
     ${S.cars.length > 1 ? `<div class="pick"><button class="chip" data-w="all" aria-pressed="true">كل السيارات (${S.cars.length})</button><button class="chip" data-w="one" aria-pressed="false">${esc(c.name)} فقط</button></div>` : ''}
+    <label class="check" id="bPhWrap"><input type="checkbox" id="bPhotos" checked> مع صور الفواتير (<span id="bPhN"></span>)</label>
     <button class="btn wide" id="bShare">${isNative ? 'تصدير ومشاركة' : 'تصدير ومشاركة / حفظ'}</button>
     ${!isNative ? `<button class="btn ghost wide" id="bDl" style="margin-top:10px">تنزيل الملف فقط</button>` : ''}
     <div class="sub-h">الاسترجاع</div>
     <p style="margin:0 0 12px;color:var(--muted);font-size:14px">اختر ملف إكسل صدّرته من التطبيق لاسترجاع كل شيء، أو أي ملف إكسل بنفس ترتيب ملفك القديم لاستيراده كسيارة.${isNative ? ' ويمكنك أيضاً فتح الملف من تطبيق Drive أو الملفات واختيار «فتح باستخدام ← سيّارتي».' : ''}</p>
     <button class="btn ghost wide" id="bImp">استيراد / استرجاع من ملف</button>`, b => {
-    b.querySelectorAll('[data-pc]').forEach(x => x.onclick = () => { const t = S.cars[+x.dataset.pc]; if (!t) return; pdfCar = t; b.querySelectorAll('[data-pc]').forEach(y => y.setAttribute('aria-pressed', y === x)); });
-    let which = 'all';
-    b.querySelectorAll('[data-w]').forEach(x => x.onclick = () => { which = x.dataset.w === 'one' ? 'one' : 'all'; b.querySelectorAll('[data-w]').forEach(y => y.setAttribute('aria-pressed', y === x)); });
+    let which = 'all', sizes = null;
+    const xlCars = () => (which === 'one' ? [c] : S.cars);
+    /* how many photos each choice carries (and roughly how big the backup gets) */
+    const counts = () => {
+      const pn = photoItems([pdfCar]).length;
+      b.querySelector('#pPhWrap').classList.toggle('hidden', !pn);
+      b.querySelector('#pPhN').textContent = nPhotos(pn);
+      const ids = [...usedPhotoIds(xlCars())];
+      b.querySelector('#bPhWrap').classList.toggle('hidden', !ids.length);
+      const bytes = sizes ? ids.reduce((a, id) => a + (sizes.get(id) || 0), 0) : 0;
+      b.querySelector('#bPhN').textContent = `${nPhotos(ids.length)}${bytes ? '، نحو ' + mb(bytes) : ''}`;
+    };
+    counts();
+    Photos.list().then(l => { sizes = new Map(l.map(x => [x.id, x.size])); if (b.isConnected) counts(); }).catch(() => {});
+    b.querySelectorAll('[data-pc]').forEach(x => x.onclick = () => { const t = S.cars[+x.dataset.pc]; if (!t) return; pdfCar = t; b.querySelectorAll('[data-pc]').forEach(y => y.setAttribute('aria-pressed', y === x)); counts(); });
+    b.querySelectorAll('[data-w]').forEach(x => x.onclick = () => { which = x.dataset.w === 'one' ? 'one' : 'all'; b.querySelectorAll('[data-w]').forEach(y => y.setAttribute('aria-pressed', y === x)); counts(); });
+    /* invoices show prices: hiding the amounts also leaves the photos out, unless chosen again */
+    b.querySelector('#pHide').onchange = e => { b.querySelector('#pPhotos').checked = !e.target.checked; b.querySelector('#pPhHint').classList.toggle('hidden', !e.target.checked); };
     const busy = async (btn, work) => {
       const old = btn.textContent; btn.textContent = 'جارٍ تجهيز الملف…'; btn.disabled = true;
       try { await work(); } catch (e) { console.error(e); toast('تعذّر إنشاء الملف: ' + String((e && e.message) || e).slice(0, 120)); }
       btn.textContent = old; btn.disabled = false;
     };
     const runPdf = mode => busy(b.querySelector(mode === 'dl' ? '#pDl' : '#pShare'), async () => {
-      const blob = await makePdf(pdfCar, b.querySelector('#pHide').checked);
+      const withPhotos = !b.querySelector('#pPhWrap').classList.contains('hidden') && b.querySelector('#pPhotos').checked;
+      const blob = await makePdf(pdfCar, b.querySelector('#pHide').checked, withPhotos);
       const name = `تقرير-${safeName(pdfCar.name)}-${todayISO()}.pdf`;
       if (await deliver(blob, name, mode, 'مشاركة التقرير')) { closeSheet(); toast('جُهّز تقرير PDF'); }
     });
     const runXlsx = mode => busy(b.querySelector(mode === 'dl' ? '#bDl' : '#bShare'), async () => {
-      const cars = which === 'one' ? [c] : S.cars;
-      const wb = await buildWorkbook(cars);
-      const buf = await wb.xlsx.writeBuffer();
+      const cars = xlCars();
+      const withPhotos = !b.querySelector('#bPhWrap').classList.contains('hidden') && b.querySelector('#bPhotos').checked;
+      const wb = await buildWorkbook(cars, withPhotos);
+      /* photos are already compressed: zip them lightly, it is much faster on a phone */
+      const buf = await wb.xlsx.writeBuffer({ zip: { compressionOptions: { level: withPhotos ? 1 : 6 } } });
       const name = `سيارتي-${which === 'one' || cars.length === 1 ? safeName(cars[0].name) + '-' : ''}${todayISO()}.xlsx`;
       if (await deliver(new Blob([buf], { type: XLSX_MIME }), name, mode, 'حفظ النسخة الاحتياطية')) { S.lastBackup = Date.now(); save(); closeSheet(); render(); toast('جُهّز ملف الإكسل'); }
     });
@@ -1095,10 +1871,21 @@ function openBackup(carId) {
 }
 
 /* ---------- PDF report ---------- */
-async function makePdf(c, hideMoney) {
+const PDF_PHOTOS = 300;
+async function makePdf(c, hideMoney, withPhotos) {
   await Promise.all(['vendor/pdf-lib.min.js', 'vendor/fontkit.umd.min.js', 'vendor/bidi.min.js', 'report.js'].map(loadScript));
   const [regular, bold] = await Promise.all([loadBytes('fonts/readex-report-400.ttf'), loadBytes('fonts/readex-report-700.ttf')]);
-  const bytes = await window.SayyaratiReport.build(reportModel(c, hideMoney), {
+  const model = reportModel(c, hideMoney);
+  if (withPhotos) {
+    const all = photoItems([c]), take = all.slice(-PDF_PHOTOS), items = [];
+    for (const it of take) {
+      const b = await Photos.blob(it.id).catch(() => null); if (!b) continue;
+      const jpg = new Uint8Array(await b.arrayBuffer());
+      if (jpegSize(jpg)) items.push({ caption: photoCaption(it.s, it.r), jpg });
+    }
+    if (items.length) model.blocks.push({ type: 'photos', title: 'صور الفواتير', note: take.length < all.length ? `آخر ${nf(take.length)} من ${nf(all.length)}` : '', items });
+  }
+  const bytes = await window.SayyaratiReport.build(model, {
     PDFLib: window.PDFLib, fontkit: window.fontkit, bidiFactory: window.bidi_js,
     fonts: { regular: new Uint8Array(regular), bold: new Uint8Array(bold) }
   });
@@ -1130,7 +1917,14 @@ function reportModel(c, hide) {
     if (driven > 0) summary.push({ label: 'تكلفة الكيلو', value: `${nf(total / driven * 1000, 1)} فلس` });
   }
   if (rate) summary.push({ label: 'معدل القيادة', value: `${nf(rate * 30)} كم/شهر` });
-  for (const x of reminders(c)) if (!x.none) summary.push({ label: `${x.sec.name} القادم`, value: x.left > 0 ? `عند ${nf(x.next)} كم، باقي ${nf(x.left)} كم` : `متأخر ${nf(-x.left)} كم`, accent: x.left <= 0 });
+  for (const x of reminders(c)) {
+    if (x.none) continue;
+    const k = x.km, t = x.time;
+    const value = x.by === 'km'
+      ? (k.left > 0 ? `عند ${nf(k.next)} كم، باقي ${nf(k.left)} كم` : `متأخر ${nf(-k.left)} كم`) + (t ? `، أو في ${fmtDate(t.due)}` : '')
+      : `في ${fmtDate(t.due)}، ${t.days > 0 ? 'باقي ' + nDays(t.days) : t.days === 0 ? 'اليوم' : 'متأخر ' + nDays(-t.days)}` + (k ? `، أو عند ${nf(k.next)} كم` : '');
+    summary.push({ label: `${x.sec.name} القادم`, value, accent: x.late });
+  }
   for (const e of expiries(c)) summary.push({ label: e.title, value: `${e.days >= 0 ? 'ينتهي' : 'انتهى'} ${fmtDate(e.date)}`, accent: e.days < 30 });
 
   const blocks = [];
@@ -1172,7 +1966,7 @@ function b64ToBuf(b64) { const s = atob(b64); const u = new Uint8Array(s.length)
 async function deliver(blob, name, mode, dialogTitle = 'مشاركة الملف') {
   if (isNative) {
     const fs = plug('Filesystem'), sh = plug('Share');
-    const w = await fs.writeFile({ path: 'exports/' + name, data: bufToB64(await blob.arrayBuffer()), directory: 'CACHE', recursive: true });
+    const w = await writeChunked(fs, 'exports/' + name, blob, 'CACHE');
     try { await sh.share({ title: name, dialogTitle, files: [w.uri] }); }
     catch (e) { if (/cancel/i.test(String(e && e.message))) return false; throw e; }
     return true;
@@ -1208,12 +2002,27 @@ async function pickImport() {
     importBusy = true;
     try {
       const r = await p.pick();
-      if (r && !r.cancelled && r.data) await importBuffer(b64ToBuf(r.data), r.name);
+      if (r && !r.cancelled) await importNative(r);
     } catch (e) { showImportError(nativeError(e)); }
     finally { importBusy = false; }
     return;
   }
   const f = $('#fileIn'); f.value = ''; f.click();
+}
+/* the native picker copies the chosen file into the app's cache; the page reads it from there and deletes it */
+async function importNative(r) {
+  let buf = null;
+  if (r && typeof r.uri === 'string' && /^file:\/\//.test(r.uri)) {
+    try {
+      const res = await fetch(window.Capacitor.convertFileSrc(r.uri));
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      buf = await res.arrayBuffer();
+    } catch (e) { throw new ImportError('unreadable', (e && e.message) || ''); }
+    finally { if (typeof r.path === 'string' && /^imports\/[\w.-]+$/.test(r.path)) plug('Filesystem').deleteFile({ path: r.path, directory: 'CACHE' }).catch(() => {}); }
+  } else if (r && typeof r.data === 'string') buf = b64ToBuf(r.data);
+  if (!buf) return;
+  if (!buf.byteLength) throw new ImportError('unreadable', 'empty');
+  await importBuffer(buf, r.name);
 }
 function nativeError(e) {
   if (e instanceof ImportError) return e;
@@ -1238,7 +2047,7 @@ function showImportError(e) {
   const kind = e instanceof ImportError ? e.kind : 'other';
   const detail = e instanceof ImportError ? e.detail : String((e && e.message) || e || '');
   const msgs = {
-    'too-large': 'الملف أكبر من 20 ميجابايت، وهذا أكبر بكثير من أي سجل سيارة. تأكد أنك اخترت الملف الصحيح.',
+    'too-large': 'الملف أكبر من 150 ميجابايت، وهذا أكبر من أي نسخة احتياطية للتطبيق. تأكد أنك اخترت الملف الصحيح.',
     'unreadable': 'لم يتمكن الهاتف من قراءة الملف من مكانه. يحدث هذا أحياناً مع ملفات الدرايف التي لم تُنزَّل بعد. جرّب أحد الحلين: افتح تطبيق Drive، واضغط ⋮ بجانب الملف ثم «فتح باستخدام» ← «سيّارتي»، أو نزّل الملف إلى الهاتف ثم اختره من «التنزيلات».',
     'not-xlsx': 'هذا الملف ليس بصيغة Excel الحديثة (‎.xlsx‎). إن كان بصيغة ‎.xls‎ القديمة أو جدول Google Sheets، افتحه واحفظه أو نزّله بصيغة ‎.xlsx‎ ثم استورده.',
     'sheets-export': 'هذا جدول Google Sheets ولم يسمح الدرايف بتحويله تلقائياً. افتحه في Google Sheets واختر «تنزيل ← Microsoft Excel (‎.xlsx‎)» ثم استورد الملف الناتج.',
@@ -1282,7 +2091,7 @@ async function importBuffer(buf, fname) {
     let data;
     try { data = JSON.parse(json); } catch (e) { throw new ImportError('bad-backup'); }
     if (!isObj(data) || !Array.isArray(data.cars)) throw new ImportError('bad-backup');
-    return askRestore(data);
+    return askRestore(data, readBackupPhotos(wb));
   }
   const c = sanitizeCar(genericImport(wb, fname), new Set(S.cars.map(x => x.id)));
   if (!c || (!c.sections.some(s => s.rows.length) && !c.cardFields.some(f => f.value !== ''))) throw new ImportError('empty');
@@ -1300,14 +2109,15 @@ async function importBuffer(buf, fname) {
     };
   });
 }
-function askRestore(raw) {
+function askRestore(raw, photos = new Map()) {
   const cars = sanitizeCars(raw.cars);
   const settings = sanitizeSettings(raw.settings);
   const n = countRows(cars);
   const when = parseDateAny(String(raw.exported || '').slice(0, 10));
   if (!cars.length) throw new ImportError('bad-backup');
   if (n > LIMITS.totalRows) throw new ImportError('too-many');
-  openSheet('استرجاع نسخة احتياطية', `<p style="margin:0 0 16px">${when ? `النسخة بتاريخ ${dateHTML(when)} ` : 'النسخة '}وفيها ${cars.length} ${cars.length === 1 ? 'سيارة' : 'سيارات'} و${n} تسجيل.</p>
+  const inFile = [...usedPhotoIds(cars)].filter(id => photos.has(id)).length;
+  openSheet('استرجاع نسخة احتياطية', `<p style="margin:0 0 16px">${when ? `النسخة بتاريخ ${dateHTML(when)} ` : 'النسخة '}وفيها ${cars.length} ${cars.length === 1 ? 'سيارة' : 'سيارات'} و${n} تسجيل${inFile ? `، وصور الفواتير: ${nf(inFile)}` : ''}.</p>
     <button class="btn amber wide" id="rMerge">دمج مع بياناتي الحالية</button>
     <p class="hint" style="font-size:13px;color:var(--muted);margin:6px 2px 14px">السيارة الموجودة في النسختين تُستبدل بنسخة الملف، وتبقى السيارات الأخرى.</p>
     <button class="btn danger wide" id="rReplace">استبدال كل بياناتي بالنسخة</button>`, b => {
@@ -1315,14 +2125,31 @@ function askRestore(raw) {
       const merged = S.cars.slice();
       for (const c of cars) { const i = merged.findIndex(x => x.id === c.id); if (i >= 0) merged[i] = c; else merged.push(c); }
       if (countRows(merged) > LIMITS.totalRows || merged.length > LIMITS.cars) { showImportError(new ImportError('too-many')); return; }
-      finishRestore(merged, settings);
+      finishRestore(merged, settings, photos, cars);
     };
-    b.querySelector('#rReplace').onclick = () => confirmBox('ستُحذف كل البيانات الحالية وتحل محلها النسخة. متابعة؟', 'استبدال', () => finishRestore(cars, settings));
+    b.querySelector('#rReplace').onclick = () => confirmBox('ستُحذف كل البيانات الحالية وتحل محلها النسخة. متابعة؟', 'استبدال', () => finishRestore(cars, settings, photos, cars));
   });
 }
-function finishRestore(cars, settings) {
-  S = sanitizeState({ ...S, cars, settings });
-  save(); applyTheme(); closeSheet(); rolledFor = null; go('home'); toast('استُرجعت النسخة');
+let restoring = false;
+async function finishRestore(cars, settings, photos = new Map(), restored = cars) {
+  if (restoring) return;
+  restoring = true;
+  openSheet('استرجاع نسخة احتياطية', `<p style="margin:0" id="rsProg" role="status">جارٍ الاسترجاع…</p>`);
+  let failed = 0;
+  try {
+    /* the photos the restored entries use, then references to photos that exist nowhere are dropped */
+    const need = usedPhotoIds(restored);
+    const have = new Set((await Photos.list().catch(() => [])).map(p => p.id));
+    const todo = [...photos.keys()].filter(id => need.has(id) && !have.has(id));
+    for (let i = 0; i < todo.length; i++) {
+      const prog = $('#rsProg'); if (prog) prog.textContent = `جارٍ حفظ صور الفواتير… ${nf(i + 1)} من ${nf(todo.length)}`;
+      try { await Photos.put(new Blob([photos.get(todo[i])], { type: 'image/jpeg' }), todo[i]); have.add(todo[i]); } catch (e) { console.warn('photo restore', e); failed++; }
+    }
+    for (const c of restored) for (const s of c.sections) for (const r of s.rows) if (r.p) { r.p = r.p.filter(id => have.has(id)); if (!r.p.length) delete r.p; }
+    S = sanitizeState({ ...S, cars, settings });
+    save(); applyTheme(); closeSheet(); rolledFor = null; go('home');
+    toast(failed ? `استُرجعت النسخة، وتعذّر حفظ ${nf(failed)} من الصور (مساحة التخزين؟)` : 'استُرجعت النسخة');
+  } finally { restoring = false; }
 }
 /* reads a workbook laid out like the original F150 file: one key/value sheet + table sheets */
 function guessType(label) {
@@ -1364,7 +2191,7 @@ function genericImport(wb, fname) {
       return;
     }
     const tmpl = /زيت|زيوت/.test(ws.name) ? 'oil' : /صيان/.test(ws.name) ? 'maint' : null;
-    const sec = { id: tmpl && !c.sections.some(s => s.id === tmpl) ? tmpl : uid(), name: str(ws.name, LIMITS.label).trim(), icon: tmpl === 'oil' ? 'oil' : tmpl === 'maint' ? 'wrench' : /وقود|بنزين/.test(ws.name) ? 'fuel' : /تأمين|ترخيص/.test(ws.name) ? 'shield' : 'doc', note: '', reminderKm: tmpl === 'oil' ? 7500 : 0, columns: [], rows: [] };
+    const sec = { id: tmpl && !c.sections.some(s => s.id === tmpl) ? tmpl : uid(), name: str(ws.name, LIMITS.label).trim(), icon: tmpl === 'oil' ? 'oil' : tmpl === 'maint' ? 'wrench' : /وقود|بنزين/.test(ws.name) ? 'fuel' : /تأمين|ترخيص/.test(ws.name) ? 'shield' : 'doc', note: '', reminderKm: tmpl === 'oil' ? 7500 : 0, reminderMonths: tmpl === 'oil' ? 6 : 0, columns: [], rows: [] };
     const above = grid.filter(r => r.rn < hdr.rn).flatMap(r => r.cells).filter(x => typeof x.v === 'string');
     if (above.length) sec.note = str(above.map(x => x.v.trim()).join(' '), 200);
     const colMap = [];
@@ -1402,7 +2229,7 @@ async function takeOpenedFile() {
   takingOpened = true;
   try {
     const r = await p.takeOpenedFile();
-    if (r && !r.none && r.data) await importBuffer(b64ToBuf(r.data), r.name);
+    if (r && !r.none) await importNative(r);
   } catch (e) { showImportError(nativeError(e)); }
   finally { takingOpened = false; }
 }
@@ -1411,6 +2238,7 @@ async function takeOpenedFile() {
 function initNative() {
   const app = plug('App');
   if (app) app.addListener('backButton', () => {
+    if (viewerOpen()) { closeViewer(); return; }
     if (sheetOpen()) { closeSheet(); return; }
     if (view !== 'home') { go('home'); return; }
     app.minimizeApp ? app.minimizeApp() : app.exitApp();
@@ -1419,6 +2247,7 @@ function initNative() {
   if (p && p.addListener) p.addListener('fileOpened', () => takeOpenedFile());
   takeOpenedFile();
   cleanOldExports();
+  initNotifications().catch(e => console.warn('notifications', e));
 }
 
 /* ---------- boot ---------- */
@@ -1427,15 +2256,19 @@ $('#fab').onclick = () => { if (!S.cars.length) return; openEntry(); };
 $('#carPill').onclick = () => openCarSwitcher();
 $('#quickExport').onclick = () => openBackup();
 $('#scrim').onclick = closeSheet;
+initViewer();
 $('#sheetClose').onclick = closeSheet;
 
 (async function boot() {
   let raw = loadLocal();
   if (isNative) { const n = await loadNative(); if (n && (!raw || finite(n.rev) > finite(raw && raw.rev))) raw = n; }
-  try { S = sanitizeState(raw); } catch (e) { console.error('state could not be read', e); S = blankState(); }
+  let loaded = true;
+  try { S = sanitizeState(raw); } catch (e) { console.error('state could not be read', e); S = blankState(); loaded = false; }
   applyTheme();
   try { render(); } catch (e) { console.error(e); S = sanitizeState(S); render(); }
   if (isNative) initNative();
+  /* photos no entry uses any more are removed once a day — never when the data could not be read */
+  if (loaded && raw) setTimeout(gcPhotos, 4000);
   if (!isNative && 'serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 })();

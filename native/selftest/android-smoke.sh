@@ -47,6 +47,8 @@ TO=180 A install -r "$APK" | tail -1 | tee -a "$OUT/progress.txt"
 TO=10 A shell getprop ro.build.version.release | sed 's/^/Android /' | tee "$OUT/device.txt"
 TO=20 A shell dumpsys package com.google.android.webview | grep -m1 versionName | sed 's/^ */WebView /' | tee -a "$OUT/device.txt"
 TO=20 A shell dumpsys package "$PKG" | sed -n '/requested permissions:/,/install permissions:/p' > "$OUT/permissions.txt"
+# what the user grants with «تفعيل» on the home screen (Android 13+ asks for it)
+TO=10 A shell pm grant "$PKG" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
 
 # the file the user picks in the system picker
 TO=30 A push native/selftest/fixture-f150-layout.xlsx /sdcard/Download/sayyarati-test.xlsx >/dev/null
@@ -99,6 +101,7 @@ waitfor "DONE" 60
 sleep 2
 res | tee "$OUT/selftest-result.txt"
 TO=20 A exec-out run-as "$PKG" cat files/sayyarati-state.json > "$OUT/state.json" 2>/dev/null
+TO=30 A shell dumpsys alarm 2>/dev/null | tr -d '\r' | grep -E "$PKG" > "$OUT/alarms.txt" || true
 TO=30 A logcat -d > "$OUT/logcat-full.txt" 2>/dev/null || true
 note "self-test finished: $(grep -c '^PASS' "$OUT/selftest-result.txt") passed, $(grep -cE '^(FAIL|ERROR)' "$OUT/selftest-result.txt") failed"
 
@@ -132,6 +135,9 @@ except Exception as e:
     print("FAIL restart checks:", repr(e))
 perms = open("smoke/permissions.txt").read()
 check("android.permission.INTERNET" not in perms, "the app has no internet permission")
+check("SCHEDULE_EXACT_ALARM" not in perms, "no exact-alarm permission")
+alarms = open("smoke/alarms.txt", errors="replace").read()
+check("TimedNotificationPublisher" in alarms or alarms.count("com.m3athrazaq.sayyarati") > 0, "reminder alarms registered with Android (%d lines)" % len(alarms.splitlines()))
 log = open("smoke/logcat-full.txt", errors="replace").read().splitlines()
 web = [l for l in log if "Capacitor" in l or "chromium" in l]
 csp = [l for l in web if ("Content Security Policy" in l or "Refused to" in l) and "example.com" not in l]

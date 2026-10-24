@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android's own backup to the Google account (Android 11 and older). Everything the app keeps is
+     included except the invoice photos: that backup is limited to 25 MB per app and stops completely
+     when an app is larger, so the photos (which can grow beyond that) would cost the backup of all the
+     records. Photos are kept in the Excel backup instead. -->
+<full-backup-content>
+    <exclude domain="file" path="photos/" />
+</full-backup-content>

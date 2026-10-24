@@ -105,6 +105,134 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
     const hidOk = await p.evaluate(async () => { const b = await makePdf(S.cars[0], true); return b.size > 8000 && (await b.slice(0, 5).text()) === '%PDF-'; });
     ok(hidOk, 'PDF without amounts created');
 
+    /* 4c. reminders: dates, distance or time (whichever first), expiries, Arabic counts */
+    const rem = await p.evaluate(() => {
+      const iso = n => addDaysISO(todayISO(), n);
+      const out = {};
+      out.months = [addMonthsISO('2026-08-31', 6), addMonthsISO('2027-01-31', 1), addMonthsISO('2028-01-31', 1), addMonthsISO('2026-11-15', 12)].join(' ');
+      out.days = [1, 2, 3, 10, 11, 30, 100].map(nDays).join('|');
+      const carOf = (rows, extra = {}) => sanitizeCar({ id: 'tc', name: 'T', cardFields: extra.card || [], odoNow: extra.odoNow || null, sections: [
+        { id: 'oil', name: 'الزيوت', reminderKm: 5000, reminderMonths: 6, columns: [{ id: 'desc', label: 'بيان', type: 'text' }, { id: 'odo', label: 'العداد', type: 'odometer' }, { id: 'date', label: 'التاريخ', type: 'date' }], rows },
+        { id: 'ins', name: 'التأمين والترخيص', columns: [{ id: 'desc', label: 'بيان', type: 'text' }, { id: 'exp', label: 'تاريخ الانتهاء', type: 'date' }], rows: extra.ins || [] }] }, new Set());
+      /* little driving: the 6 months come first */
+      let c = carOf([{ id: 'a', v: { odo: 10000, date: iso(-170) } }], { odoNow: { value: 10500, date: iso(0) } });
+      let x = reminders(c)[0];
+      out.timeFirst = x.by === 'time' && x.time.due === addMonthsISO(iso(-170), 6) && x.time.days === Math.round(daysBetween(todayISO(), x.time.due)) && !x.late && x.due === x.time.due && !x.est;
+      /* a lot of driving: the distance comes first, and its date is estimated from the driving rate */
+      c = carOf([{ id: 'a', v: { odo: 10000, date: iso(-30) } }], { odoNow: { value: 14500, date: iso(0) } });
+      x = reminders(c)[0];
+      out.kmFirst = x.by === 'km' && x.km.left === 500 && x.est && x.due === iso(3) && !x.late;
+      /* overdue by distance */
+      c = carOf([{ id: 'a', v: { odo: 10000, date: iso(-30) } }], { odoNow: { value: 15200, date: iso(0) } });
+      x = reminders(c)[0];
+      out.late = x.late && x.by === 'km' && x.km.left === -200;
+      /* expiries: insurance and registration in one section are both reminded; the older insurance is replaced
+         by the newer one; an item that expired long ago is not shown; a card item named "انتهاء…" counts too */
+      c = carOf([], { card: [{ id: 'f1', label: 'انتهاء رخصة القيادة', type: 'date', value: iso(40) }],
+        ins: [{ id: 'i1', v: { desc: 'تأمين 2025', exp: iso(-300) } }, { id: 'i2', v: { desc: 'تأمين شامل 2026', exp: iso(65) } },
+              { id: 'i3', v: { desc: 'تجديد الدفتر', exp: iso(12) } }, { id: 'i4', v: { desc: 'فحص قديم', exp: iso(-90) } }] });
+      out.exp = expiries(c).map(e => e.title + ':' + e.days).join('|');
+      /* a section saved before 1.3 (no time interval): oil gets 6 months, an explicit 0 stays 0 */
+      const old = sanitizeSection({ id: 'oil', name: 'الزيوت', reminderKm: 7500, columns: [{ id: 'd', label: 'التاريخ', type: 'date' }], rows: [] }, new Set());
+      const off = sanitizeSection({ id: 'oil', name: 'الزيوت', reminderKm: 7500, reminderMonths: 0, columns: [], rows: [] }, new Set());
+      out.migrate = old.reminderMonths === 6 && off.reminderMonths === 0;
+      return out;
+    });
+    ok(rem.months === '2027-02-28 2027-02-28 2028-02-29 2027-11-15', 'months are added without overflowing (' + rem.months + ')');
+    ok(rem.days === 'يوم واحد|يومين|3 أيام|10 أيام|11 يوماً|30 يوماً|100 يوم', 'Arabic day counts (' + rem.days + ')');
+    ok(rem.timeFirst, 'reminder by time when the months come first');
+    ok(rem.kmFirst, 'reminder by distance when the kilometres come first (date estimated from the driving rate)');
+    ok(rem.late, 'overdue reminder');
+    ok(rem.exp === 'تجديد الدفتر:12|انتهاء رخصة القيادة:40|تأمين شامل 2026:65', 'expiry dates grouped by what they are (' + rem.exp + ')');
+    ok(rem.migrate, 'older oil sections get "every 6 months"; an explicit 0 is kept');
+
+    /* 4d. phone notifications plan (Android) and the calendar file (iPhone / web) */
+    const plan = await p.evaluate(() => {
+      const keep = S;
+      try {
+        const iso = n => addDaysISO(todayISO(), n);
+        S = sanitizeState({ settings: { notifyHour: 9, expiryLead: 30, odoNudge: 30 }, cars: [{ id: 'c1', name: 'F150, "الكبيرة"; تجربة', cardFields: [{ id: 'f', label: 'انتهاء التأمين', type: 'date', value: iso(45) }], odoNow: { value: 12000, date: iso(-40) },
+          sections: [{ id: 'oil', name: 'الزيوت', reminderKm: 5000, reminderMonths: 6, columns: [{ id: 'odo', label: 'العداد', type: 'odometer' }, { id: 'date', label: 'التاريخ', type: 'date' }], rows: [{ id: 'r', v: { odo: 10000, date: iso(-100) } }] }] }] });
+        const a = planAlerts(), b = planAlerts();
+        const ids = a.map(x => x.id);
+        const nine = a.every(x => new Date(x.at).getHours() === 9 && new Date(x.at).getMinutes() === 0);
+        const odo = a.find(x => x.key.endsWith(':odo'));
+        const ics = buildIcs(S.cars);
+        const lines = ics.text.split('\r\n');
+        const enc = new TextEncoder();
+        return {
+          n: a.length, same: JSON.stringify(a) === JSON.stringify(b), future: a.every(x => x.at > Date.now()), nine,
+          ids: ids.every(i => Number.isInteger(i) && i > 0 && i < 2 ** 31) && new Set(ids).size === ids.length,
+          kinds: a.map(x => x.key.split(':').pop()).sort().join(','),
+          odo: odo ? Math.round(daysBetween(addDaysISO(todayISO(), -40), new Date(odo.at - new Date(odo.at).getTimezoneOffset() * 6e4).toISOString().slice(0, 10))) : -1,
+          icsCount: ics.count, crlf: !/[^\r]\n/.test(ics.text), short: lines.every(l => enc.encode(l).length <= 75),
+          unfold: ics.text.replace(/\r\n /g, ''), alarms: (ics.text.match(/BEGIN:VALARM/g) || []).length
+        };
+      } finally { S = keep; }
+    });
+    ok(plan.n >= 5 && plan.same && plan.future && plan.nine && plan.ids, `notifications: ${plan.n} planned, the same each time, at 9:00, unique ids`);
+    ok(/day/.test(plan.kinds) && /lead/.test(plan.kinds) && /week/.test(plan.kinds) && /due/.test(plan.kinds) && /odo/.test(plan.kinds), 'notifications for the expiry (30 days, a week, the day), the service and the odometer (' + plan.kinds + ')');
+    ok(plan.odo === 60, 'odometer reminder every 30 days after the last reading (' + plan.odo + ' days)');
+    ok(plan.icsCount === 2 && plan.crlf && plan.short && plan.alarms === 5, 'calendar file: 2 events, 5 alarms, CRLF, lines folded at 75 bytes');
+    ok(plan.unfold.includes('SUMMARY:انتهاء التأمين — F150\\, "الكبيرة"\\; تجربة') && /TRIGGER:-P29DT15H/.test(plan.unfold) && /TRIGGER:PT9H/.test(plan.unfold) && /DTSTART;VALUE=DATE:\d{8}/.test(plan.unfold),
+      'calendar text escaped and alarms at the reminder hour');
+
+    /* 4e. invoice photos: added from the gallery, made smaller, hidden camera data removed */
+    const mkImg = (w, h, type, orient, secret) => p.evaluate(async ({ w, h, type, orient, secret }) => {
+      const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+      const g = cv.getContext('2d'); g.fillStyle = '#e9a23b'; g.fillRect(0, 0, w, h); g.fillStyle = '#12262e'; g.fillRect(0, 0, w / 2, h / 3);
+      let u8 = new Uint8Array(await (await new Promise(r => cv.toBlob(r, type, 0.9))).arrayBuffer());
+      if (orient || secret) {   /* an EXIF block (as cameras write) with the orientation and a text that must not survive */
+        const enc = new TextEncoder(), desc = enc.encode(secret + '\0'), n = 2;
+        const ifd = 2 + n * 12 + 4, tiff = new Uint8Array(8 + ifd + desc.length), dv = new DataView(tiff.buffer);
+        tiff.set([0x4D, 0x4D, 0, 0x2A, 0, 0, 0, 8]); dv.setUint16(8, n);
+        dv.setUint16(10, 0x010E); dv.setUint16(12, 2); dv.setUint32(14, desc.length); dv.setUint32(18, 8 + ifd); tiff.set(desc, 8 + ifd);
+        dv.setUint16(22, 0x0112); dv.setUint16(24, 3); dv.setUint32(26, 1); dv.setUint16(30, orient || 1); dv.setUint32(34, 0);
+        const body = new Uint8Array(6 + tiff.length); body.set(enc.encode('Exif\0\0')); body.set(tiff, 6);
+        const seg = new Uint8Array(4 + body.length); seg.set([0xFF, 0xE1, (body.length + 2) >> 8, (body.length + 2) & 255]); seg.set(body, 4);
+        const out = new Uint8Array(u8.length + seg.length); out.set(u8.subarray(0, 2)); out.set(seg, 2); out.set(u8.subarray(2), 2 + seg.length); u8 = out;
+      }
+      let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+      return s;
+    }, { w, h, type, orient, secret }).then(s => Buffer.from(s, 'latin1'));
+    await p.click('#nav [data-v=logs]'); await p.waitForTimeout(200);
+    await p.click('.seg [data-s] >> nth=0'); await p.waitForTimeout(200);
+    await p.click('#fab'); await p.waitForTimeout(400);
+    await p.fill('#sheetBody input[type=text]:not(.num) >> nth=0', 'فاتورة الورشة');
+    const [ph] = await Promise.all([p.waitForEvent('filechooser'), p.click('#phPick')]);
+    await ph.setFiles([
+      { name: 'camera.jpg', mimeType: 'image/jpeg', buffer: await mkImg(2400, 1800, 'image/jpeg', 6, 'GPS-SECRET-29.37N') },
+      { name: 'receipt.png', mimeType: 'image/png', buffer: await mkImg(500, 900, 'image/png') },
+      { name: 'fake.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('not an image at all') }
+    ]);
+    await p.waitForFunction(() => document.querySelectorAll('#phList .ph img').length === 2 && !document.querySelector('#phList .busy'), null, { timeout: 20000 }).catch(() => {});
+    const tiles = await p.$$eval('#phList .ph img', im => im.map(i => i.naturalWidth + 'x' + i.naturalHeight));
+    ok(tiles.join(' ') === '1200x1600 500x900', 'two photos added, the broken one refused; camera orientation applied and size reduced (' + tiles.join(' ') + ')');
+    /* the viewer: two taps delete a photo from the entry */
+    await p.click('#phList [data-pi="1"]'); await p.waitForTimeout(300);
+    ok(await p.isVisible('#viewer.on') && (await p.textContent('#vCount')).includes('2'), 'photo viewer opens');
+    await p.click('#vDel'); await p.click('#vDel'); await p.waitForTimeout(300);
+    ok(!(await p.isVisible('#viewer.on')) || (await p.$$('#phList .ph img')).length === 1, 'photo removed from the entry after confirming');
+    if (await p.isVisible('#viewer.on')) await p.click('#vClose');
+    await p.click('#eSave'); await p.waitForTimeout(600);
+    st = await state();
+    const prow = st.cars.flatMap(c => c.sections).flatMap(s => s.rows).find(r => r.p);
+    const pinfo = prow ? await p.evaluate(async ids => {
+      const b = await Photos.blob(ids[0]); const u8 = new Uint8Array(await b.arrayBuffer());
+      const txt = new TextDecoder('latin1').decode(u8);
+      return { type: b.type, size: b.size, dim: jpegSize(u8), secret: txt.includes('GPS-SECRET'), exif: txt.includes('Exif') };
+    }, prow.p) : null;
+    ok(prow && prow.p.length === 1 && pinfo && pinfo.type === 'image/jpeg' && pinfo.dim.w === 1200 && pinfo.dim.h === 1600, 'entry keeps one photo, stored as a 1200×1600 JPEG');
+    ok(pinfo && !pinfo.secret && !pinfo.exif, 'hidden camera data (location…) removed from the photo');
+    ok(await p.isVisible('.entry .clip'), 'records list marks entries with photos');
+    /* photos go into the PDF report when asked */
+    const pdfImgs = await p.evaluate(async () => {
+      const c = S.cars.find(x => x.sections.some(s => s.rows.some(r => r.p)));
+      const count = async b => (new TextDecoder('latin1').decode(new Uint8Array(await b.arrayBuffer())).match(/\/Subtype\s*\/Image/g) || []).length;
+      return [await count(await makePdf(c, false, true)), await count(await makePdf(c, false, false))];
+    });
+    ok(pdfImgs[0] === 1 && pdfImgs[1] === 0, 'PDF report includes the invoice photo only when chosen (' + pdfImgs + ')');
+
     /* 5. a crafted backup: nothing runs, everything is cleaned */
     const P = 'window.__pwned=';
     const evil = {
@@ -194,6 +322,77 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
     await fp.waitForTimeout(1500);
     const fr = fp.frames().find(f => f.url().includes('index.html'));
     ok(!fr || await fr.evaluate(() => !document.querySelector('#nav')).catch(() => true), 'refuses to run inside a frame');
+
+    /* 10. a new phone: the backup brings the invoice photos back */
+    const ctx2 = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true, locale: 'ar' });
+    const q = await ctx2.newPage();
+    q.on('pageerror', e => errors.push('page2: ' + e.message));
+    q.on('console', m => { const t = m.text(); if (/Content Security Policy|Refused to/.test(t)) csp.push(t); else if (m.type() === 'error') errors.push(t); });
+    await q.goto(BASE + 'index.html'); await q.waitForTimeout(800);
+    const pick2 = async file => { const [fc] = await Promise.all([q.waitForEvent('filechooser'), q.evaluate(() => document.querySelector('#fileIn').click())]); await fc.setFiles(file); await q.waitForTimeout(2000); };
+    await pick2(exported2);
+    ok((await q.textContent('#sheetBody')).includes('صور الفواتير: 1'), 'restore summary counts the invoice photos');
+    await q.click('#rReplace'); await q.waitForTimeout(300); await q.click('#cYes'); await q.waitForTimeout(2500);
+    const back = await q.evaluate(async () => {
+      const ids = [...usedPhotoIds()]; const stored = (await Photos.list()).map(x => x.id);
+      const b = ids.length && await Photos.blob(ids[0]);
+      return { ids, stored, jpeg: b ? !!jpegSize(new Uint8Array(await b.arrayBuffer())) : false };
+    });
+    ok(back.ids.length === 1 && back.stored.includes(back.ids[0]) && back.jpeg, 'photos restored on a new device with their entries');
+
+    /* 11. photos in a crafted backup: only real JPEGs with valid ids are taken, references to missing photos dropped */
+    const crafted = await q.evaluate(async () => {
+      const ExcelJS = await loadExcel();
+      const cv = document.createElement('canvas'); cv.width = 40; cv.height = 30; cv.getContext('2d').fillRect(0, 0, 20, 20);
+      const bytes = async t => new Uint8Array(await (await new Promise(r => cv.toBlob(r, t, 0.9))).arrayBuffer());
+      const jpg = await bytes('image/jpeg'), png = await bytes('image/png');
+      const wb = new ExcelJS.Workbook();
+      wb.addWorksheet('x').getCell('A1').value = 'visible';
+      const m = wb.addWorksheet('_sayyarati_photos', { state: 'veryHidden' });
+      m.getCell(1, 1).value = 'sayyarati-photos-v1';
+      [['okphoto', jpg], ['constructor', jpg], ['pngphoto', png], ['okphoto', jpg], ['bad id!', jpg]].forEach(([id, u8], i) => {
+        const im = wb.addImage({ buffer: u8.buffer, extension: id === 'pngphoto' ? 'png' : 'jpeg' });
+        m.getCell(i + 2, 1).value = id; m.addImage(im, { tl: { col: 1, row: i + 1 }, ext: { width: 4, height: 4 } });
+      });
+      const h = wb.addWorksheet('_sayyarati', { state: 'veryHidden' });
+      h.getCell(1, 1).value = 'sayyarati-backup-v1';
+      h.getCell(2, 1).value = JSON.stringify({ app: 'sayyarati', cars: [{ id: 'cc', name: 'crafted', cardFields: [], sections: [{ id: 's', name: 's', columns: [{ id: 'd', label: 'بيان', type: 'text' }],
+        rows: [{ id: 'r1', v: { d: 'x' }, p: ['okphoto', 'constructor', 'pngphoto', 'missing1', '<img src=x>', 'okphoto'] }] }] }] });
+      const buf = await wb.xlsx.writeBuffer();
+      await importBuffer(buf, 'crafted.xlsx');
+      return true;
+    });
+    await q.waitForTimeout(500);
+    if (crafted && await q.isVisible('#rMerge')) { await q.click('#rMerge'); await q.waitForTimeout(2000); }
+    const cr = await q.evaluate(async () => { const c = S.cars.find(x => x.id === 'cc'); return { p: c && c.sections[0].rows[0].p, stored: (await Photos.list()).map(x => x.id).sort() }; });
+    ok(JSON.stringify(cr.p) === '["okphoto"]' && cr.stored.includes('okphoto') && !cr.stored.includes('pngphoto') && !cr.stored.includes('constructor'), 'crafted photo backup cleaned (' + JSON.stringify(cr) + ')');
+
+    /* 12. photos no entry uses are cleaned up (only once they are hours old) */
+    const gc = await q.evaluate(async () => {
+      const blob = await Photos.blob('okphoto');
+      await Photos.put(blob, 'orphanold'); await Photos.put(blob, 'orphannew');
+      const db = await new Promise(r => { const o = indexedDB.open('sayyarati-photos', 1); o.onsuccess = () => r(o.result); });
+      await new Promise(r => { const t = db.transaction('photos', 'readwrite'); const st = t.objectStore('photos'); st.get('orphanold').onsuccess = e => { const v = e.target.result; v.t = Date.now() - 864e5; st.put(v); }; t.oncomplete = r; });
+      localStorage.removeItem('sayyarati.photoGC');
+      await gcPhotos();
+      return (await Photos.list()).map(x => x.id).sort().join(',');
+    });
+    ok(gc.includes('okphoto') && gc.includes('orphannew') && !gc.includes('orphanold'), 'unused photos removed once old (' + gc + ')');
+
+    /* 13. iPhone "add to calendar": the service worker serves the calendar file the page made */
+    await q.waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 15000 }).catch(() => {});
+    if (!(await q.evaluate(() => !!navigator.serviceWorker.controller))) { await q.reload(); await q.waitForTimeout(1500); }
+    const icsRes = await q.evaluate(async () => {
+      const keep = S;
+      S = sanitizeState({ cars: [{ id: 'c1', name: 'T', cardFields: [{ id: 'f', label: 'انتهاء التأمين', type: 'date', value: addDaysISO(todayISO(), 20) }], sections: [] }] });
+      const { text } = buildIcs(S.cars); S = keep;
+      const cache = await caches.open(ICS_CACHE);
+      await cache.put(new URL(ICS_PATH, location.href).href, new Response(new Blob([text]), { headers: { 'Content-Type': 'text/calendar; charset=utf-8' } }));
+      const r = await fetch(ICS_PATH);
+      return { controlled: !!navigator.serviceWorker.controller, type: r.headers.get('content-type'), body: (await r.text()).slice(0, 15) };
+    });
+    ok(icsRes.controlled && /text\/calendar/.test(icsRes.type) && icsRes.body === 'BEGIN:VCALENDAR', 'calendar file served by the service worker (' + JSON.stringify(icsRes) + ')');
+    await ctx2.close();
   } catch (e) {
     results.push('ERROR ' + e.message);
   }

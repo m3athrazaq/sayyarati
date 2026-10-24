@@ -10,7 +10,6 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
-import android.util.Base64;
 import androidx.activity.result.ActivityResult;
 import androidx.core.content.IntentCompat;
 import com.getcapacitor.JSObject;
@@ -19,9 +18,12 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
+import java.io.OutputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -40,15 +42,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * - takeOpenedFile(): the file the app was opened with ("Open with" / "Share" from another app).
  *
  * Only content:// files the user chose are read, at most MAX_BYTES, on the plugin's own threads with a
- * time limit (a provider that never answers cannot block the rest of the app), and nothing is written
- * anywhere: the bytes go to the page, which validates them before anything is imported.
+ * time limit (a provider that never answers cannot block the rest of the app). The file is copied into
+ * the app's own cache (cache/imports/, which nothing else can read); the page reads that copy, deletes
+ * it, and validates the content before anything is imported. A backup with invoice photos can be large,
+ * so the bytes are never passed to the page as one huge message.
  */
 @CapacitorPlugin(name = "XlsxImport")
 public class XlsxImportPlugin extends Plugin {
 
     static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    static final int MAX_BYTES = 20 * 1024 * 1024;
-    static final long TIMEOUT_SECONDS = 120;
+    static final long MAX_BYTES = 150L * 1024 * 1024;
+    static final long TIMEOUT_SECONDS = 300;
+    static final String IMPORT_DIR = "imports";
 
     private final ExecutorService reader = Executors.newFixedThreadPool(2, r -> daemon(r, "XlsxImport-read"));
     private final ScheduledExecutorService timer = Executors.newSingleThreadScheduledExecutor(r -> daemon(r, "XlsxImport-timer"));
@@ -149,14 +154,20 @@ public class XlsxImportPlugin extends Plugin {
         Future<?> job = reader.submit(() -> {
             JSObject r = null;
             String error = null, code = null;
+            File copy = null;
             try {
                 Context ctx = getContext();
                 ContentResolver cr = ctx.getContentResolver();
-                byte[] bytes = readBytes(ctx, cr, uri);
+                File dir = new File(ctx.getCacheDir(), IMPORT_DIR);
+                clearDir(dir);
+                if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("cannot create the import folder");
+                copy = new File(dir, "import-" + System.currentTimeMillis() + ".xlsx");
+                long size = copyTo(ctx, cr, uri, copy);
                 r = new JSObject();
                 r.put("name", displayName(cr, uri));
-                r.put("size", bytes.length);
-                r.put("data", Base64.encodeToString(bytes, Base64.NO_WRAP));
+                r.put("size", size);
+                r.put("path", IMPORT_DIR + "/" + copy.getName());
+                r.put("uri", Uri.fromFile(copy).toString());
             } catch (TooLargeException e) {
                 error = "The file is larger than " + (MAX_BYTES / 1024 / 1024) + " MB";
                 code = "TOO_LARGE";
@@ -170,7 +181,11 @@ public class XlsxImportPlugin extends Plugin {
                 error = e.getClass().getSimpleName() + ": " + e.getMessage();
                 code = "READ_FAILED";
             }
-            if (!finished.compareAndSet(false, true)) return; // timed out already
+            if (r == null && copy != null) copy.delete();
+            if (!finished.compareAndSet(false, true)) { // timed out already
+                if (copy != null) copy.delete();
+                return;
+            }
             if (r != null) call.resolve(r);
             else call.reject(error, code);
             if (saved) getBridge().releaseCall(call);
@@ -187,7 +202,16 @@ public class XlsxImportPlugin extends Plugin {
         );
     }
 
-    private static byte[] readBytes(Context ctx, ContentResolver cr, Uri uri) throws IOException {
+    /** removes copies left behind (the page reads an import and deletes it right away) */
+    private static void clearDir(File dir) {
+        File[] old = dir.listFiles();
+        if (old == null) return;
+        long cutoff = System.currentTimeMillis() - 10 * 60 * 1000;
+        for (File f : old) if (f.isFile() && f.lastModified() < cutoff) f.delete();
+    }
+
+    /** copies the file into `out`; stops at MAX_BYTES, or when the time limit cancels the job */
+    private static long copyTo(Context ctx, ContentResolver cr, Uri uri, File out) throws IOException {
         InputStream in = null;
         AssetFileDescriptor afd = null;
         try {
@@ -202,16 +226,18 @@ public class XlsxImportPlugin extends Plugin {
                 in = cr.openInputStream(uri);
             }
             if (in == null) throw new IOException("no data");
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buf = new byte[64 * 1024];
             long total = 0;
-            int n;
-            while ((n = in.read(buf)) != -1) {
-                total += n;
-                if (total > MAX_BYTES) throw new TooLargeException();
-                out.write(buf, 0, n);
+            try (OutputStream os = new FileOutputStream(out)) {
+                byte[] buf = new byte[256 * 1024];
+                int n;
+                while ((n = in.read(buf)) != -1) {
+                    if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("cancelled");
+                    total += n;
+                    if (total > MAX_BYTES) throw new TooLargeException();
+                    os.write(buf, 0, n);
+                }
             }
-            return out.toByteArray();
+            return total;
         } finally {
             if (in != null) {
                 try {

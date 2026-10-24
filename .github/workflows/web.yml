@@ -1,5 +1,6 @@
 # Web app checks on every change: the files are stamped consistently (tools/stamp.py), and the
-# browser test (tests/web.test.js) passes — normal import/export/restore and crafted or broken files.
+# browser tests pass — tests/web.test.js (import/export/restore, reminders, invoice photos, crafted or
+# broken files) and tests/native.test.js (the same app as it runs inside the Android app).
 name: Web app (checks)
 
 on:
@@ -40,6 +41,8 @@ jobs:
           node --check app.js
           node --check sw.js
           node --check report.js
+          node --check tests/web.test.js
+          node --check tests/native.test.js
           sha256sum -c vendor/SHA256SUMS
 
       - name: Browser test
@@ -54,3 +57,10 @@ jobs:
           NODE_PATH="$RUNNER_TEMP/pw/node_modules" node tests/web.test.js | tee web-test.txt
           ! grep -E "^(FAIL|ERROR)" web-test.txt
           grep -q "^PASS no JS errors" web-test.txt
+
+      - name: Phone app test (the page with stand-in Android plugins)
+        run: |
+          curl -sf http://localhost:8765/index.html > /dev/null || { python3 -m http.server 8765 > /dev/null 2>&1 & sleep 1; }
+          NODE_PATH="$RUNNER_TEMP/pw/node_modules" node tests/native.test.js | tee native-test.txt
+          ! grep -E "^(FAIL|ERROR)" native-test.txt
+          grep -q "^PASS no JS errors" native-test.txt

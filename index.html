@@ -2,11 +2,11 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>سيّارتي</title>
-<meta name="description" content="سجل السيارة: الزيوت والصيانة والمصاريف لأكثر من سيارة، مع نسخة احتياطية بملف إكسل.">
+<meta name="description" content="سجل السيارة: الزيوت والصيانة والمصاريف لأكثر من سيارة، مع تذكير بالمواعيد وصور الفواتير ونسخة احتياطية بملف إكسل.">
 <meta name="theme-color" content="#12262E">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -243,6 +243,49 @@ input[type="date"]{direction:ltr;text-align:right}
 .welcome .btn{margin-bottom:10px}
 .backup-note{display:flex;gap:10px;align-items:center;background:var(--amber-soft);border-radius:var(--r-md);padding:11px 14px;font-size:14px;margin-top:14px}
 .backup-note button{margin-inline-start:auto;font-weight:500;text-decoration:underline}
+
+/* reminders */
+.due-foot{border-top:1px solid var(--line);margin-top:14px;padding-top:8px;display:flex;justify-content:flex-end}
+.due-foot button{display:inline-flex;align-items:center;gap:6px;font-size:14px;color:var(--muted);padding:5px 6px;border-radius:8px}
+.odo-label .stale{color:var(--amber)}
+.warn-t{color:var(--warn)}
+.notify-note{flex-wrap:wrap}
+.notify-note svg{flex:none}
+.notify-note span{flex:1;min-width:58%}
+.notify-note .mute{margin-inline-start:0;font-weight:400;text-decoration:none;color:var(--muted)}
+.car-tag{display:inline-flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);font-weight:400;margin-inline-start:6px}
+.car-tag .dot{width:8px;height:8px;border-radius:50%}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+.hint-p{font-size:13px;color:var(--muted);margin:-4px 2px 14px}
+
+/* invoice photos */
+.photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(74px,1fr));gap:8px;margin-bottom:8px}
+.photos.empty{display:none}
+.ph{position:relative;aspect-ratio:3/4;border-radius:var(--r-sm);overflow:hidden;background:var(--bg);border:1px solid var(--line);display:grid;place-items:center;color:var(--muted);font-size:12px;padding:0}
+.ph img{width:100%;height:100%;object-fit:cover;display:block}
+.ph.busy{animation:pulse 1.2s ease-in-out infinite;text-align:center;padding:4px}
+.ph.missing img{display:none}
+.ph.missing::after{content:"غير متوفرة";font-size:11.5px;text-align:center;padding:4px}
+@keyframes pulse{50%{opacity:.5}}
+@media (prefers-reduced-motion:reduce){.ph.busy{animation:none}}
+.ph-btns{display:flex;gap:8px}
+.ph-btns .btn{flex:1;min-height:44px;padding:10px 12px;font-weight:400}
+.ph-btns .btn:disabled{opacity:.4}
+.clip{display:inline-flex;align-items:center;gap:4px}
+
+/* photo viewer */
+.viewer{position:fixed;inset:0;z-index:70;background:#05090b;color:#fff;display:none;flex-direction:column}
+.viewer.on{display:flex}
+.v-bar,.v-nav{display:flex;align-items:center;gap:8px;padding:8px 10px}
+.v-bar{padding-top:calc(8px + env(safe-area-inset-top))}
+.v-nav{justify-content:space-between;padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+.viewer button{display:inline-flex;align-items:center;gap:6px;padding:10px 14px;border-radius:12px;color:#fff;font-size:14px;background:rgba(255,255,255,.1);min-height:44px;white-space:nowrap;flex:none}
+.v-bar .sp{flex:1;min-width:0;text-align:center;font-size:13px;color:#A9BCC1;white-space:nowrap}
+.v-box{flex:1;overflow:auto;display:grid;place-items:center;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+.v-box img{max-width:100%;max-height:100%;display:block;cursor:zoom-in}
+.v-box.z{display:block}
+.v-box.z img{max-width:none;max-height:none;cursor:zoom-out}
+.v-box.missing::after{content:"الصورة غير موجودة على هذا الجهاز";color:#A9BCC1;font-size:14px}
 </style>
 </head>
 <body>
@@ -293,7 +336,23 @@ input[type="date"]{direction:ltr;text-align:right}
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <input type="file" id="fileIn" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="hidden">
+<input type="file" id="photoCam" accept="image/*" capture="environment" class="hidden">
+<input type="file" id="photoPick" accept="image/*" multiple class="hidden">
 
-<script src="app.js?v=44479f6081da" integrity="sha384-Rvbu6CCG7ZdamwQe4dZoNmBGOm7K1OXEjZIEgra6EuA08/SYrB7+pULYQR/yKH/6"></script>
+<div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-label="صورة الفاتورة">
+  <div class="v-bar">
+    <button id="vClose" aria-label="إغلاق"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    <span class="sp num" id="vCount"></span>
+    <button id="vShare"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 13v8h14v-8"/></svg><span>مشاركة</span></button>
+    <button id="vDel"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg><span id="vDelT">حذف</span></button>
+  </div>
+  <div class="v-box" id="vBox"><img id="vImg" alt="صورة الفاتورة"></div>
+  <div class="v-nav">
+    <button id="vPrev" aria-label="الصورة السابقة"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M9 6l6 6-6 6"/></svg></button>
+    <button id="vNext" aria-label="الصورة التالية"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M15 6l-6 6 6 6"/></svg></button>
+  </div>
+</div>
+
+<script src="app.js?v=0ac370b2cf6d" integrity="sha384-00baaNXaZp6oaoFoLxzHe5JetEsUyAkcpdfSsqR/bU5GmHAok0m3P2gVu6nX5MfY"></script>
 </body>
 </html>
