@@ -1133,7 +1133,7 @@ function planSection(sec, columns, meta) {
 function runPlans(plans, done, reopen) {
   const lost = plans.reduce((a, p) => a + p.lost, 0);
   const run = () => { plans.forEach(p => p.apply()); save(); closeSheet(); render(); toast(done); };
-  if (lost) confirmBox(`سيُحذف ${lost} ${lost === 1 ? 'قيمة مسجّلة' : 'من القيم المسجّلة'} في بنود لم تعد موجودة. متابعة؟`, 'حفظ وحذف القيم', run, true, reopen);
+  if (lost) confirmBox(`سيُحذف ${lost} ${lost === 1 ? 'قيمة مسجّلة' : 'من القيم المسجّلة'} في بنود حذفتها أو جعلتها «مسافة تُحسب تلقائياً». متابعة؟`, 'حفظ وحذف القيم', run, true, reopen);
   else run();
 }
 /* reminder fields of the section editor: by distance (needs an odometer item) and by time (needs a date item) */
