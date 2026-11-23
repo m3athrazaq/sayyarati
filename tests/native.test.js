@@ -51,7 +51,11 @@ function fakeCapacitor() {
   const on = name => (ev, cb) => { (listeners[name + ':' + ev] = listeners[name + ':' + ev] || []).push(cb); return Promise.resolve({ remove() {} }); };
   const fsm = {};
   for (const m of ['writeFile', 'appendFile', 'readFile', 'deleteFile', 'readdir', 'getUri']) {
-    fsm[m] = async o => { try { return await window.__fs(m, JSON.parse(JSON.stringify(o))); } catch (e) { throw new Error(String(e.message || e).replace(/^Error: /, '')); } };
+    fsm[m] = async o => {
+      /* a slow phone: the next write of the data file takes this long (set by a test) */
+      if (m === 'writeFile' && window.__slowWrite && /sayyarati-state\.json$/.test(o.path)) { const d = window.__slowWrite; window.__slowWrite = 0; await new Promise(r => setTimeout(r, d)); }
+      try { return await window.__fs(m, JSON.parse(JSON.stringify(o))); } catch (e) { throw new Error(String(e.message || e).replace(/^Error: /, '')); }
+    };
   }
   const ln = { perm: 'prompt', exact: 'denied', pending: [], scheduled: [], channels: [] };
   window.__ln = ln; window.__listeners = listeners; window.__shared = [];
@@ -195,6 +199,51 @@ function fakeCapacitor() {
     await shot('native-settings');
     await p.uncheck('#sNotify'); await p.waitForTimeout(2200);
     ok((await ln()).pending.length === 0, 'turning notifications off cancels them all');
+
+    /* automatic copies are files in the app storage: one is written before an entry is deleted,
+       and «استرجاع الناقص» brings the entry back from it */
+    await p.click('#nav [data-v=logs]'); await p.waitForTimeout(300);
+    await p.click('.log .entry >> nth=0'); await p.waitForTimeout(400);
+    const delId = await p.evaluate(() => draft && draft.rowId);
+    const has = id => p.evaluate(x => S.cars.some(c => c.sections.some(s => s.rows.some(r => r.id === x))), id);
+    await p.click('#eDel'); await p.waitForTimeout(200); await p.click('#cYes'); await p.waitForTimeout(800);
+    const delSnap = [...files.keys()].find(k => /^DATA\/snapshots\/\d{8}-\d{6}-delrow\.json$/.test(k));
+    ok(!!delId && !!delSnap && files.get(delSnap).toString('utf8').includes(delId) && !(await has(delId)), 'a copy is saved as a file before an entry is deleted');
+    await p.click('#nav [data-v=settings]'); await p.waitForTimeout(300);
+    await p.click('#sSnap'); await p.waitForTimeout(1200);
+    const snapList = await p.textContent('#snList');
+    await p.click('#snList [data-sn]'); await p.waitForTimeout(1500);
+    ok(snapList.includes('فيها 1 تسجيل ليس في بياناتك الآن') && await has(delId) && JSON.parse(files.get('DATA/sayyarati-state.json').toString('utf8')).cars.some(c => c.sections.some(s => s.rows.some(r => r.id === delId))), 'the deleted entry is found in the copy and saved back');
+    await p.evaluate(() => closeSheet()); await p.waitForTimeout(300);
+
+    /* two saves close together on a slow phone: the first (older) write never ends up over the newer one */
+    const lastRev = await p.evaluate(async () => {
+      window.__slowWrite = 600;
+      S.cars[0].name = 'الأولى'; save();
+      await new Promise(r => setTimeout(r, 300));
+      S.cars[0].name = 'الثانية'; save();
+      await new Promise(r => setTimeout(r, 1600));
+      return S.rev;
+    });
+    const fileNow = JSON.parse(files.get('DATA/sayyarati-state.json').toString('utf8'));
+    ok(fileNow.rev === lastRev && fileNow.cars[0].name === 'الثانية', `quick saves: the app file ends with the newest data (rev ${fileNow.rev} of ${lastRev})`);
+
+    /* opening the app: the data comes from the file and the copy of the day is written */
+    await p.reload(); await p.waitForTimeout(3500);
+    ok([...files.keys()].some(k => /^DATA\/snapshots\/\d{8}-\d{6}-day\.json$/.test(k)) && await p.evaluate(() => S.cars.length === 2 && S.cars[0].name === 'الثانية'), 'the copy of the day is written when the app opens');
+
+    /* the app file cannot be read (and the web storage is empty): it is kept as a copy, the first screen
+       offers the copies, and the data and its settings come back */
+    const goodSettings = await p.evaluate(() => JSON.stringify(S.settings));
+    await p.evaluate(() => localStorage.clear());
+    files.set('DATA/sayyarati-state.json', Buffer.from('{"cars":[{"id":"c', 'utf8'));
+    await p.reload(); await p.waitForTimeout(1500);
+    const kept = [...files.keys()].find(k => /^DATA\/snapshots\/\d{8}-\d{6}-unreadable\.json$/.test(k));
+    ok(!!kept && files.get(kept).toString('utf8') === '{"cars":[{"id":"c' && await p.isVisible('#wSnap'), 'an unreadable app file is kept as a copy; the first screen offers the copies');
+    await p.click('#wSnap'); await p.waitForTimeout(1200);
+    await p.click('#snList [data-sn]'); await p.waitForTimeout(1500);
+    const back = JSON.parse(files.get('DATA/sayyarati-state.json').toString('utf8'));
+    ok(await p.evaluate(s => S.cars.length === 2 && JSON.stringify(S.settings) === s, goodSettings) && back.cars.length === 2, 'the data and its settings come back from the copy and are saved in the app file');
   } catch (e) {
     results.push('ERROR ' + e.message);
   }

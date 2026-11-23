@@ -273,6 +273,15 @@ input[type="date"]{direction:ltr;text-align:right}
 .ph-btns .btn:disabled{opacity:.4}
 .clip{display:inline-flex;align-items:center;gap:4px}
 
+.filter-note{margin:-4px 2px 12px;font-size:13px;color:var(--muted)}
+.filter-note button{color:var(--text);font-weight:500;text-decoration:underline;font-size:13px}
+
+/* suggestions under a text item (instead of the phone's list, which covers the keyboard) */
+.sugg{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.sugg::-webkit-scrollbar{display:none}
+.sugg .sg{flex:none;max-width:72vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:8px 12px;min-height:38px;border-radius:999px;background:var(--bg);border:1px solid var(--line);color:var(--text);font-size:14px}
+.sugg .sg:active{background:var(--line)}
+
 /* photo viewer */
 .viewer{position:fixed;inset:0;z-index:70;background:#05090b;color:#fff;display:none;flex-direction:column}
 .viewer.on{display:flex}
@@ -353,6 +362,6 @@ input[type="date"]{direction:ltr;text-align:right}
   </div>
 </div>
 
-<script src="app.js?v=c23624f5659a" integrity="sha384-zF0IYAVJiM17SuawNCDWAF2Pl83RFkLsu16WetOK/yJRjIoaXUpXIM1MzQzvswTL"></script>
+<script src="app.js?v=be241a50dc1c" integrity="sha384-w0N2IgjcbjgMCQMWNuMXyv27skw4SnvN3GSRkEcpUUmfTGbLotIb9g6ztZZbmzOf"></script>
 </body>
 </html>

@@ -6,7 +6,7 @@
    - كل نص يُدرج في HTML يمر عبر esc()، وكل معرّف/لون/نوع يأتي من ملف يُتحقق منه في sanitize*().
    - لا eval ولا سكربتات خارجية؛ سياسة CSP في index.html تمنع أي سكربت غير ملفات التطبيق نفسه.
    ====================================================================== */
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const KEY = 'sayyarati.state.v1';
 const NATIVE_FILE = 'sayyarati-state.json';
 /* a backup with invoice photos can be large; the native picker has the same limit */
@@ -244,15 +244,23 @@ function sanitizeState(x) {
 /* ---------- state ---------- */
 let S = null;
 function blankState() { return sanitizeState({}); }
+/* stored data that is there but cannot be read: kept as an automatic copy before anything overwrites it */
+let unreadable = null;
 function loadLocal() {
-  try { const t = localStorage.getItem(KEY); if (t) return JSON.parse(t); } catch (e) {}
-  return null;
+  let t = null;
+  try { t = localStorage.getItem(KEY); } catch (e) { return null; }
+  if (!t) return null;
+  try { return JSON.parse(t); } catch (e) { unreadable = unreadable || t; return null; }
 }
 async function loadNative() {
   const fs = plug('Filesystem'); if (!fs) return null;
-  try { const r = await fs.readFile({ path: NATIVE_FILE, directory: 'DATA', encoding: 'utf8' }); return JSON.parse(r.data); } catch (e) { return null; }
+  let t = null;
+  try { t = (await fs.readFile({ path: NATIVE_FILE, directory: 'DATA', encoding: 'utf8' })).data; } catch (e) { return null; }
+  if (!t) return null;
+  try { return JSON.parse(t); } catch (e) { unreadable = unreadable || t; return null; }
 }
 let saveTimer = null, lastWarn = 0, saveOk = true;
+let nativeWriting = false, nativeAgain = false;
 function save() {
   S.rev = (S.rev || 0) + 1;
   const json = JSON.stringify(S);
@@ -260,14 +268,19 @@ function save() {
   try { localStorage.setItem(KEY, json); } catch (e) { ok = false; }
   if (isNative) {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      const fs = plug('Filesystem');
-      if (!fs) { setSaveOk(ok); return; }
-      fs.writeFile({ path: NATIVE_FILE, data: JSON.stringify(S), directory: 'DATA', encoding: 'utf8', recursive: true })
-        .then(() => setSaveOk(true)).catch(e => { console.warn(e); setSaveOk(false); });
-    }, 150);
+    saveTimer = setTimeout(writeNative, 150);
     scheduleNotifSync();
   } else setSaveOk(ok);
+}
+/* the app's own file (Android): one write at a time, always of the latest data, so an older copy can
+   never finish after a newer one */
+function writeNative() {
+  const fs = plug('Filesystem'); if (!fs) return;
+  if (nativeWriting) { nativeAgain = true; return; }
+  nativeWriting = true;
+  fs.writeFile({ path: NATIVE_FILE, data: JSON.stringify(S), directory: 'DATA', encoding: 'utf8', recursive: true })
+    .then(() => setSaveOk(true)).catch(e => { console.warn(e); setSaveOk(false); })
+    .finally(() => { nativeWriting = false; if (nativeAgain) { nativeAgain = false; writeNative(); } });
 }
 function setSaveOk(ok) {
   const was = saveOk; saveOk = ok;
@@ -345,15 +358,30 @@ function inDays(n) {
 const colOf = (sec, type) => sec.columns.find(c => c.type === type);
 const textCol = sec => sec.columns.find(c => c.type === 'text');
 /* rows in chronological order (odometer first, then date) */
+/* entries oldest first. Entries with an odometer reading go by the reading; an entry without one goes by
+   its date (or the day it was recorded), right after the last reading taken on or before that day.
+   A single, consistent order: the earlier rule (reading when both had one, else date) could place an
+   entry anywhere in the list when readings and dates disagreed, so a new entry seemed to be gone. */
 function chrono(sec) {
   const o = colOf(sec, 'odometer'), d = colOf(sec, 'date');
-  return sec.rows.map((r, i) => ({ r, i })).sort((a, b) => {
-    const ao = o ? toNum(a.r.v[o.id]) : null, bo = o ? toNum(b.r.v[o.id]) : null;
-    if (ao != null && bo != null && ao !== bo) return ao - bo;
-    const ad = d ? String(a.r.v[d.id] || '') : '', bd = d ? String(b.r.v[d.id] || '') : '';
-    if (ad && bd && ad !== bd) return ad < bd ? -1 : 1;
-    return (a.r.t || a.i) - (b.r.t || b.i);
-  }).map(x => x.r);
+  const items = sec.rows.map((r, i) => {
+    const dv = d ? r.v[d.id] : '', t = finite(r.t, 0);
+    return { r, i, t, o: o ? toNum(r.v[o.id]) : null, ed: ISO_RE.test(dv) ? dv : t > 0 ? new Date(t).toISOString().slice(0, 10) : '' };
+  });
+  const byDay = (a, b) => (a.ed < b.ed ? -1 : a.ed > b.ed ? 1 : 0) || (a.t - b.t) || (a.i - b.i);
+  const chain = items.filter(x => x.o != null).sort((a, b) => (a.o - b.o) || byDay(a, b));
+  const rest = items.filter(x => x.o == null).sort(byDay);
+  if (!chain.length || !rest.length) return chain.concat(rest).map(x => x.r);
+  /* for a day D: the last reading in the chain dated on or before D (prefix maximum over the readings sorted by day) */
+  const days = chain.map((x, k) => ({ ed: x.ed, k })).sort((a, b) => (a.ed < b.ed ? -1 : a.ed > b.ed ? 1 : a.k - b.k));
+  const upTo = []; let mx = -1;
+  for (const e of days) { mx = Math.max(mx, e.k); upTo.push(mx); }
+  const after = ed => { let lo = 0, hi = days.length; while (lo < hi) { const m = (lo + hi) >> 1; if (days[m].ed <= ed) lo = m + 1; else hi = m; } return lo ? upTo[lo - 1] : -1; };
+  const slots = new Map();
+  for (const x of rest) { const k = after(x.ed); if (!slots.has(k)) slots.set(k, []); slots.get(k).push(x.r); }
+  const out = slots.get(-1) || [];
+  chain.forEach((x, k) => { out.push(x.r); for (const r of slots.get(k) || []) out.push(r); });
+  return out;
 }
 /* distance since previous entry in the same section */
 function distances(sec) {
@@ -533,8 +561,9 @@ function applyTheme() {
 }
 
 /* ---------- navigation ---------- */
-let view = 'home', activeSec = null, query = '';
+let view = 'home', activeSec = null, query = '', querySec = null;
 function go(v) {
+  if (v !== 'logs') query = '';   /* an old search never hides records the next time the page opens */
   view = v;
   document.querySelectorAll('#nav button[data-v]').forEach(b => { if (b.dataset.v === v) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   render(); window.scrollTo(0, 0);
@@ -563,7 +592,7 @@ function renderRescue(e) {
     <button class="btn danger wide" id="rsDel" style="margin-top:10px">حذف هذه السيارة</button></div>`;
   $('#rsExp').onclick = openBackup;
   $('#rsCars').onclick = openCarSwitcher;
-  $('#rsDel').onclick = () => { const c = car(); confirmBox(`حذف «${c.name}» وكل سجلاتها؟`, 'حذف السيارة', () => { S.cars = S.cars.filter(x => x.id !== c.id); S.activeCar = S.cars[0] ? S.cars[0].id : null; save(); go('home'); }); };
+  $('#rsDel').onclick = () => { const c = car(); confirmBox(`حذف «${c.name}» وكل سجلاتها؟`, 'حذف السيارة', async () => { await snapshot('delcar'); S.cars = S.cars.filter(x => x.id !== c.id); S.activeCar = S.cars[0] ? S.cars[0].id : null; save(); go('home'); }); };
 }
 
 /* ---------- welcome ---------- */
@@ -574,9 +603,13 @@ function renderWelcome() {
     <p>سجّل تبديل الزيت والصيانة وكل مصاريف سياراتك، وتابع موعد التبديل القادم، واحتفظ بنسخة إكسل منسّقة في الدرايف.</p>
     <button class="btn amber wide" id="wImport">استيراد من ملف إكسل</button>
     <button class="btn wide" id="wNew">إضافة سيارة جديدة</button>
+    <button class="btn ghost wide hidden" id="wSnap">استرجاع من نسخة تلقائية على الهاتف</button>
   </div>`;
   $('#wImport').onclick = () => pickImport();
   $('#wNew').onclick = () => openCarEditor(null);
+  $('#wSnap').onclick = openSnapshots;
+  /* the data could have been lost (or deleted): the automatic copies are the way back */
+  Snapshots.ids().then(ids => { const b = $('#wSnap'); if (b && ids.length) b.classList.remove('hidden'); }).catch(() => {});
 }
 
 /* ---------- odometer ---------- */
@@ -710,19 +743,22 @@ function renderLogs() {
   const c = car();
   if (!c.sections.find(s => s.id === activeSec)) activeSec = c.sections[0] && c.sections[0].id;
   const s = c.sections.find(x => x.id === activeSec);
+  /* a search belongs to the section it was typed in (and car): never carried to another one */
+  if (query && querySec !== c.id + '/' + activeSec) query = '';
   let body = '';
   if (!s) body = `<div class="empty"><b>لا توجد أقسام</b>أضف قسماً من الإعدادات.</div>`;
   else {
     const dist = distances(s);
-    const q = query.trim();
+    const q = query.trim(), fq = fold(q);
     let rows = chrono(s).reverse();
-    if (q) rows = rows.filter(r => Object.values(r.v).some(v => String(v).includes(q)) || s.columns.some(c2 => c2.type === 'date' && fmtDate(r.v[c2.id]).includes(q)));
+    if (q) rows = rows.filter(r => Object.values(r.v).some(v => fold(v).includes(fq)) || s.columns.some(c2 => c2.type === 'date' && fmtDate(r.v[c2.id]).includes(q)));
     const t = textCol(s), m = s.columns.filter(x => x.type === 'money'), o = colOf(s, 'odometer'), d = colOf(s, 'date'), dc = colOf(s, 'distance');
     const others = s.columns.filter(x => x !== t && !m.includes(x) && x !== o && x !== d && x.type !== 'distance');
     body = `
     <div class="sec-head"><div><h1>${esc(s.name)}</h1><p>${s.rows.length} ${s.rows.length === 1 ? 'تسجيل' : 'تسجيلات'}${s.note ? ' · ' + esc(s.note) : ''}</p></div>
       ${m.length ? `<div class="sec-total"><small>المجموع</small><b>${money(sectionTotal(s))}</b></div>` : ''}</div>
-    ${s.rows.length > 5 ? `<input class="search" id="lq" type="search" placeholder="ابحث في ${esc(s.name)}" value="${esc(query)}">` : ''}
+    ${s.rows.length > 5 || q ? `<input class="search" id="lq" type="search" placeholder="ابحث في ${esc(s.name)}" value="${esc(query)}">` : ''}
+    ${q ? `<p class="filter-note">يظهر ${rows.length} من ${s.rows.length} · <button id="lqClear">إظهار الكل</button></p>` : ''}
     ${rows.length ? `<ul class="log">${rows.map(r => {
       const amt = m.reduce((a, x) => a + (toNum(r.v[x.id]) || 0), 0);
       const meta = [];
@@ -740,7 +776,8 @@ function renderLogs() {
   $('#v-logs').querySelectorAll('[data-s]').forEach(b => b.onclick = () => { activeSec = b.dataset.s; query = ''; renderLogs(); });
   $('#v-logs').querySelectorAll('.entry').forEach(b => b.onclick = () => openEntry(activeSec, b.dataset.row));
   $('#lAddSec').onclick = openAddSection;
-  const lq = $('#lq'); if (lq) lq.oninput = () => { query = lq.value; const pos = lq.selectionStart; renderLogs(); const n = $('#lq'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } };
+  const lq = $('#lq'); if (lq) lq.oninput = () => { query = lq.value; querySec = c.id + '/' + activeSec; const pos = lq.selectionStart; renderLogs(); const n = $('#lq'); if (n) { n.focus(); n.setSelectionRange(pos, pos); } };
+  if ($('#lqClear')) $('#lqClear').onclick = () => { query = ''; renderLogs(); };
 }
 
 /* ---------- entry form ---------- */
@@ -809,10 +846,11 @@ function renderEntry() {
       if (col.type === 'distance') { fields += `<div class="field"><span>${esc(col.label)}</span><div class="calc" id="calcDist">—</div></div>`; return; }
       const attrs = { text: 'type="text"', number: 'type="text" inputmode="decimal"', money: 'type="text" inputmode="decimal"', odometer: 'type="text" inputmode="numeric"', date: 'type="date"' }[col.type] || 'type="text"';
       const hint = col.type === 'odometer' && cur ? `<div class="hint" id="odoHint">آخر قراءة معروفة: ${nf(cur)} كم</div>` : col.type === 'money' ? `<div class="hint">${esc(S.settings.currency)}</div>` : '';
-      const listId = col.type === 'text' ? `dl-${ci}` : '';
       const isNum = col.type === 'number' || col.type === 'money' || col.type === 'odometer';
-      fields += `<label class="field"><span>${esc(col.label)}</span><input ${attrs} data-ci="${ci}" value="${esc(v)}" maxlength="${LIMITS.text}" ${listId ? `list="${listId}" autocomplete="off"` : ''} ${isNum ? 'class="num"' : ''}>${hint}</label>`;
-      if (listId) { const opts = [...new Set(s.rows.map(r => r.v[col.id]).filter(Boolean))].slice(-30); fields += `<datalist id="${listId}">${opts.map(o => `<option value="${esc(o)}">`).join('')}</datalist>`; }
+      /* earlier values of a text item are offered as buttons under it (the phone's own suggestion list
+         would be drawn over the keyboard) */
+      const sugg = col.type === 'text' ? `<div class="sugg hidden" data-sg="${ci}" role="group" aria-label="اقتراحات"></div>` : '';
+      fields += `<label class="field"><span>${esc(col.label)}</span><input ${attrs} data-ci="${ci}" value="${esc(v)}" maxlength="${LIMITS.text}" autocomplete="off" ${isNum ? 'class="num"' : ''}>${sugg}${hint}</label>`;
     });
   }
   const carsPick = S.cars.length > 1 && !editing ? `<div class="pick" aria-label="السيارة">${S.cars.map((x, i) => `<button class="chip" data-car-i="${i}" aria-pressed="${x.id === draft.carId}"><span class="dot" style="background:${esc(x.color)}"></span>${esc(x.name)}</button>`).join('')}</div>` : '';
@@ -828,11 +866,65 @@ function renderEntry() {
     }
     b.querySelectorAll('[data-car-i]').forEach(x => x.onclick = () => { const t = S.cars[+x.dataset.carI]; if (!t) return; collect(b, s); draft.carId = t.id; draft.v = {}; S.activeCar = t.id; save(); render(); renderEntry(); });
     b.querySelectorAll('[data-sec-i]').forEach(x => x.onclick = () => { const t = c.sections[+x.dataset.secI]; if (!t) return; collect(b, s); draft.secId = t.id; draft.v = {}; renderEntry(); });
-    b.querySelectorAll('input[data-ci]').forEach(i => i.oninput = () => { collect(b, s); updateCalc(b, c, s); });
+    b.querySelectorAll('input[data-ci]').forEach(i => i.oninput = () => { collect(b, s); updateCalc(b, c, s); showSugg(b, s, i); });
+    if (s) bindSugg(b, s);
     updateCalc(b, c, s);
     if (b.querySelector('#eSave')) b.querySelector('#eSave').onclick = () => saveEntry(b, c, s);
-    if (b.querySelector('#eDel')) b.querySelector('#eDel').onclick = () => confirmBox('حذف هذا التسجيل نهائياً؟', 'حذف', () => { s.rows = s.rows.filter(r => r.id !== draft.rowId); save(); render(); toast('حُذف التسجيل'); });
+    if (b.querySelector('#eDel')) b.querySelector('#eDel').onclick = () => confirmBox('حذف هذا التسجيل؟ (يبقى في النسخ التلقائية على الهاتف أياماً)', 'حذف', async () => {
+      const cc = S.cars.find(x => x.id === draft.carId), ss = cc && cc.sections.find(x => x.id === draft.secId);
+      if (!ss) return;
+      await snapshot('delrow');
+      ss.rows = ss.rows.filter(r => r.id !== draft.rowId); save(); render(); toast('حُذف التسجيل');
+    });
     const first = b.querySelector('input[data-ci]'); if (first && !editing && !('ontouchstart' in window)) first.focus();
+  });
+}
+/* ---------- suggestions under text items: what was written there before, newest first ---------- */
+function suggestionsFor(s, col) {
+  const seen = new Set(), out = [];
+  for (const r of chrono(s).reverse()) {
+    const v = String(r.v[col.id] ?? '').trim(); if (!v) continue;
+    const k = fold(v); if (seen.has(k)) continue;
+    seen.add(k); out.push(v);
+    if (out.length >= 300) break;
+  }
+  return out;
+}
+function showSugg(b, s, input) {
+  const ci = +input.dataset.ci, col = s && s.columns[ci];
+  const box = b.querySelector(`[data-sg="${ci}"]`);
+  if (!box || !col) return;
+  if (!box._all) box._all = suggestionsFor(s, col);
+  const q = fold(input.value);
+  let list = box._all;
+  if (q) {
+    const starts = [], inside = [];
+    for (const v of list) { const n = fold(v); if (n === q) continue; if (n.startsWith(q)) starts.push(v); else if (n.includes(q)) inside.push(v); }
+    list = starts.concat(inside);
+  }
+  list = list.slice(0, 8);
+  box.innerHTML = list.map(v => `<button type="button" class="sg" data-sv="${esc(v)}">${esc(v.length > 40 ? v.slice(0, 40) + '…' : v)}</button>`).join('');
+  box.classList.toggle('hidden', !list.length || document.activeElement !== input);
+}
+function bindSugg(b, s) {
+  b.querySelectorAll('input[data-ci]').forEach(input => {
+    const box = b.querySelector(`[data-sg="${input.dataset.ci}"]`);
+    if (!box) return;
+    input.addEventListener('focus', () => {
+      showSugg(b, s, input);
+      /* once the keyboard is up, keep the item and its suggestions in sight */
+      setTimeout(() => { if (document.activeElement === input) input.closest('.field').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }, 350);
+    });
+    input.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== input) box.classList.add('hidden'); }, 120));
+    /* tapping a suggestion must not take the focus (and the keyboard) away from the item */
+    box.addEventListener('pointerdown', e => e.preventDefault());
+    box.addEventListener('mousedown', e => e.preventDefault());
+    box.addEventListener('click', e => {
+      const t = e.target.closest('[data-sv]'); if (!t) return;
+      input.value = t.dataset.sv;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      box.classList.add('hidden');
+    });
   });
 }
 function collect(b, s) { if (!s) return; b.querySelectorAll('input[data-ci]').forEach(i => { const col = s.columns[+i.dataset.ci]; if (col) draft.v[col.id] = i.value.trim(); }); }
@@ -847,8 +939,11 @@ function updateCalc(b, c, s) {
   const h = b.querySelector('#odoHint');
   if (h) { const cur = currentOdo(c); const low = v != null && cur && v < cur && !draft.rowId; h.classList.toggle('warn', !!low); h.textContent = low ? `القراءة أقل من آخر قراءة معروفة (${nf(cur)} كم) — تأكد منها` : `آخر قراءة معروفة: ${nf(cur)} كم`; }
 }
-function saveEntry(b, c, s) {
-  collect(b, s);
+function saveEntry(b, c0, s0) {
+  collect(b, s0);
+  /* the car and section as they are now (the data may have been reloaded since the form opened) */
+  const c = S.cars.find(x => x.id === draft.carId), s = c && c.sections.find(x => x.id === draft.secId);
+  if (!c || !s) { toast('تعذّر الحفظ: القسم لم يعد موجوداً'); closeSheet(); render(); return; }
   const v = {};
   for (const col of s.columns) {
     if (col.type === 'distance') continue;
@@ -866,6 +961,7 @@ function saveEntry(b, c, s) {
     const row = { id: uid(), t: Date.now(), v }; if (p.length) row.p = p;
     s.rows.push(row);
   }
+  if (!draft.rowId) query = '';   /* the new entry is always in sight */
   activeSec = s.id; save(); closeSheet(); render(); toast(draft.rowId ? 'حُفظ التعديل' : `سُجّل في ${s.name} — ${c.name}`);
 }
 
@@ -912,7 +1008,8 @@ function openCarEditor(id) {
       }
       save(); closeSheet(); rolledFor = null; render(); toast(c ? 'حُفظت السيارة' : `أُضيفت ${name}`);
     };
-    if (b.querySelector('#ceDel')) b.querySelector('#ceDel').onclick = () => confirmBox(`حذف «${c.name}» وكل سجلاتها؟ احفظ نسخة احتياطية أولاً إن لم تفعل.`, 'حذف السيارة', () => {
+    if (b.querySelector('#ceDel')) b.querySelector('#ceDel').onclick = () => confirmBox(`حذف «${c.name}» وكل سجلاتها؟ احفظ نسخة احتياطية أولاً إن لم تفعل.`, 'حذف السيارة', async () => {
+      await snapshot('delcar');
       S.cars = S.cars.filter(x => x.id !== c.id); S.activeCar = S.cars[0] ? S.cars[0].id : null; save(); go('home'); toast('حُذفت السيارة');
     });
   });
@@ -1002,6 +1099,8 @@ function openAddSection() {
 }
 /* ---------- applying edited items to a car (keeps existing values) ---------- */
 const norm = v => String(v ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+/* for searching and suggestions: أ/إ/آ = ا، ة = ه، ى = ي، without tashkeel or tatweel */
+const fold = v => norm(v).replace(/[\u064B-\u0652\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ة/g, 'ه').replace(/ى/g, 'ي');
 /* pairs each new item with an old one: same id first, then same name */
 function matchItems(next, old, key) {
   const used = new Set(), m = new Map();
@@ -1020,6 +1119,8 @@ function planSection(sec, columns, meta) {
   const { m, dropped } = matchItems(columns, sec.columns, 'label');
   let lost = 0;
   for (const r of sec.rows) for (const d of dropped) if (filled(r.v[d.id])) lost++;
+  /* an item turned into «المسافة» is worked out from the odometer: what was written in it goes */
+  for (const c of columns) { const o = m.get(c.id); if (c.type === 'distance' && o && o.type !== 'distance') for (const r of sec.rows) if (filled(r.v[o.id])) lost++; }
   return { lost, apply: () => {
     for (const r of sec.rows) {
       const v = {};
@@ -1084,7 +1185,7 @@ function openSectionEditor(id, isNew) {
       });
       runPlans(plans, 'حُفظ القسم', () => openSheet('تعديل القسم', '', draw));
     };
-    b.querySelector('#seDel').onclick = () => confirmBox(`حذف قسم «${s.name}» و${s.rows.length} تسجيل فيه؟`, 'حذف القسم', () => { c.sections = c.sections.filter(x => x !== s); save(); render(); toast('حُذف القسم'); });
+    b.querySelector('#seDel').onclick = () => confirmBox(`حذف قسم «${s.name}» و${s.rows.length} تسجيل فيه؟`, 'حذف القسم', async () => { await snapshot('delsec'); c.sections = c.sections.filter(x => x !== s); save(); render(); toast('حُذف القسم'); });
   };
   openSheet(isNew ? 'قسم جديد' : 'تعديل القسم', '', draw);
 }
@@ -1127,6 +1228,7 @@ function renderSettings() {
       <p style="margin:0 0 14px;color:var(--muted);font-size:14px">تقرير PDF لكل سيارة على حدة، وملف إكسل منسّق بكل السيارات والأقسام يُحفظ في الدرايف أو أي مكان من قائمة المشاركة ويمكن استرجاعه في أي وقت.${last && !isNaN(last) ? `<br>آخر نسخة احتياطية: ${dateHTML(last.toISOString().slice(0, 10))}` : ''}</p>
       <div class="btn-row"><button class="btn amber" id="sPdf">تقرير PDF</button><button class="btn" id="sExp">تصدير إكسل</button></div>
       <button class="btn ghost wide" id="sImp" style="margin-top:10px">استيراد / استرجاع</button>
+      <button class="btn ghost wide" id="sSnap" style="margin-top:10px">النسخ التلقائية واسترجاع المحذوف</button>
     </div>
     <div class="block"><h2>التذكيرات</h2>
       ${isNative ? `<label class="check"><input type="checkbox" id="sNotify" ${S.settings.notify && notifPerm === 'granted' ? 'checked' : ''}> إشعارات على الهاتف قبل المواعيد</label>
@@ -1157,6 +1259,7 @@ function renderSettings() {
   $('#sExp').onclick = () => openBackup();
   $('#sPdf').onclick = () => openBackup(c.id);
   $('#sImp').onclick = pickImport;
+  $('#sSnap').onclick = openSnapshots;
   $('#sCard').onclick = () => openCardEditor(true);
   $('#sAddSec').onclick = openAddSection;
   $('#sAddCar').onclick = () => openCarEditor(null);
@@ -1569,6 +1672,7 @@ function gcPhotos() {
       const last = Number(localStorage.getItem('sayyarati.photoGC')) || 0;
       if (restoring || Date.now() - last < 864e5) return;
       const used = usedPhotoIds();
+      for (const id of await snapshotPhotoIds()) used.add(id);
       for (const p of await Photos.list()) {
         if (restoring) return;
         if (!used.has(p.id) && Date.now() - p.t > 6 * 3600e3) await Photos.del(p.id);
@@ -1591,6 +1695,117 @@ function photoCaption(s, r) {
   if (d && r.v[d.id]) parts.push(fmtDate(r.v[d.id]));
   if (o && toNum(r.v[o.id]) != null) parts.push(`${nf(r.v[o.id])} كم`);
   return parts.join(' · ');
+}
+
+/* ======================================================================
+   Automatic copies on the device: the data as the app found it on each day it was opened (the last 10),
+   and just before every deletion or restore (the last few of each). Nothing leaves the phone; Android's
+   Google backup leaves them out. «استرجاع الناقص» brings back the entries a copy has and the data
+   no longer has, without removing or changing anything.
+   ====================================================================== */
+const SNAP_KEEP = { day: 10, delrow: 5, delsec: 3, delcar: 3, restore: 3, unreadable: 3 };
+const SNAP_RE = /^(\d{8})-(\d{6})-(day|delrow|delsec|delcar|restore|unreadable)$/;
+const SNAP_WHY = { day: 'أول فتح للتطبيق في ذلك اليوم', delrow: 'قبل حذف تسجيل', delsec: 'قبل حذف قسم', delcar: 'قبل حذف سيارة', restore: 'قبل استرجاع نسخة', unreadable: 'بيانات تعذّرت قراءتها' };
+const Snapshots = (() => {
+  let dbp = null;
+  const db = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open('sayyarati-snapshots', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('snaps', { keyPath: 'id' });
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => { dbp = null; rej(r.error); };
+  }));
+  const req = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const store = async mode => (await db()).transaction('snaps', mode).objectStore('snaps');
+  const fs = () => plug('Filesystem');
+  return {
+    async put(id, json) {
+      if (!SNAP_RE.test(id)) throw new Error('bad copy id');
+      if (isNative) await fs().writeFile({ path: `snapshots/${id}.json`, data: json, directory: 'DATA', encoding: 'utf8', recursive: true });
+      else await req((await store('readwrite')).put({ id, json }));
+    },
+    async ids() {
+      if (isNative) {
+        try { const r = await fs().readdir({ path: 'snapshots', directory: 'DATA' }); return (r.files || []).map(f => String((f && f.name) || f).replace(/\.json$/, '')).filter(x => SNAP_RE.test(x)); }
+        catch (e) { return []; }
+      }
+      return (await req((await store('readonly')).getAllKeys())).filter(x => typeof x === 'string' && SNAP_RE.test(x));
+    },
+    async get(id) {
+      if (!SNAP_RE.test(String(id))) return null;
+      if (isNative) { try { return (await fs().readFile({ path: `snapshots/${id}.json`, directory: 'DATA', encoding: 'utf8' })).data; } catch (e) { return null; } }
+      const rec = await req((await store('readonly')).get(id));
+      return rec && typeof rec.json === 'string' ? rec.json : null;
+    },
+    async del(id) {
+      if (!SNAP_RE.test(String(id))) return;
+      if (isNative) await fs().deleteFile({ path: `snapshots/${id}.json`, directory: 'DATA' }).catch(() => {});
+      else await req((await store('readwrite')).delete(id));
+    }
+  };
+})();
+const stamp14 = (d = new Date()) => { const p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`; };
+/* keeps a copy of the data as it is now; only the newest few of each kind stay */
+async function snapshot(reason, json) {
+  try {
+    if (json == null && !(S && S.cars && S.cars.length)) return;
+    await Snapshots.put(`${stamp14()}-${reason}`, json == null ? JSON.stringify(S) : String(json));
+    const seen = {};
+    for (const id of (await Snapshots.ids()).sort().reverse()) {
+      const k = id.match(SNAP_RE)[3];
+      seen[k] = (seen[k] || 0) + 1;
+      if (seen[k] > (SNAP_KEEP[k] || 3)) await Snapshots.del(id);
+    }
+  } catch (e) { console.warn('automatic copy', e); }
+}
+async function dailySnapshot() {
+  const today = stamp14().slice(0, 8);
+  try { if ((await Snapshots.ids()).some(x => x.startsWith(today) && x.endsWith('-day'))) return; } catch (e) { return; }
+  await snapshot('day');
+}
+/* photo ids the automatic copies still use (their photos are kept as long as the copies) */
+async function snapshotPhotoIds() {
+  const out = new Set();
+  for (const id of await Snapshots.ids()) {
+    try { for (const c of arr(JSON.parse(await Snapshots.get(id)).cars)) for (const s of arr(c && c.sections)) for (const r of arr(s && s.rows)) for (const p of arr(r && r.p)) if (typeof p === 'string') out.add(p); }
+    catch (e) { /* unreadable copy */ }
+  }
+  return out;
+}
+async function openSnapshots() {
+  openSheet('النسخ التلقائية على الهاتف', `<p class="hint-p" style="margin-top:0">يحتفظ التطبيق بنسخة من بياناتك في كل يوم تفتحه فيه (آخر 10 أيام)، وقبل كل حذف أو استرجاع. «استرجاع الناقص» يعيد التسجيلات الموجودة في النسخة وليست في بياناتك الآن، ولا يحذف شيئاً ولا يغيّره.</p><div id="snList" role="status">جارٍ الفحص…</div>`);
+  const box = () => $('#snList');
+  let ids = [];
+  try { ids = (await Snapshots.ids()).sort().reverse(); } catch (e) { /* none */ }
+  const have = rowKeys(S.cars);
+  const items = [];
+  for (const id of ids) {
+    let cars = null, settings = null;
+    try { const o = JSON.parse(await Snapshots.get(id)); cars = sanitizeCars(o.cars); settings = o.settings; } catch (e) { cars = null; }
+    items.push({ id, cars, settings, miss: cars ? missingRows(cars, have) : 0 });
+  }
+  if (!box()) return;
+  if (!items.length) { box().innerHTML = '<div class="empty"><b>لا توجد نسخ تلقائية بعد</b>تُحفظ أول نسخة حين تفتح التطبيق.</div>'; return; }
+  const when = id => { const m = id.match(SNAP_RE); const iso = `${m[1].slice(0, 4)}-${m[1].slice(4, 6)}-${m[1].slice(6)}`; const h = +m[2].slice(0, 2), mi = m[2].slice(2, 4); return `${dateHTML(iso)} · <span class="num">${h > 12 ? h - 12 : h || 12}:${mi}</span> ${h < 12 ? 'ص' : 'م'}`; };
+  box().innerHTML = `<div class="list">${items.map((x, i) => `<div class="list-item snap"><span class="grow"><b style="font-weight:500">${when(x.id)}</b>
+    <small>${esc(SNAP_WHY[x.id.match(SNAP_RE)[3]] || '')}${x.cars ? ` · ${x.cars.length === 1 ? 'سيارة واحدة' : nf(x.cars.length) + ' سيارات'} · ${nf(countRows(x.cars))} تسجيل` : ''}</small>
+    ${x.cars ? (x.miss ? `<small class="warn-t">فيها ${nf(x.miss)} تسجيل ليس في بياناتك الآن</small>` : '<small>لا ينقص بياناتك الآن شيء منها</small>') : '<small class="warn-t">تعذّرت قراءتها؛ احتفظ بها إن احتجت إليها</small>'}</span>
+    ${x.miss ? `<button class="btn amber" data-sn="${i}">استرجاع الناقص</button>` : ''}</div>`).join('')}</div>`;
+  box().querySelectorAll('[data-sn]').forEach(b => b.onclick = async () => {
+    const x = items[+b.dataset.sn]; if (!x || !x.cars) return;
+    b.disabled = true;
+    const { cars, added } = mergeCars(S.cars, x.cars);
+    if (countRows(cars) > LIMITS.totalRows) { toast('لا مكان لكل التسجيلات: وصلت البيانات إلى الحد الأقصى'); b.disabled = false; return; }
+    await snapshot('restore');
+    /* photos of the returning entries: kept while the copy existed; any that are gone are dropped */
+    const photos = new Set((await Photos.list().catch(() => [])).map(p => p.id));
+    for (const c of cars) for (const s of c.sections) for (const r of s.rows) if (r.p) { r.p = r.p.filter(id => photos.has(id)); if (!r.p.length) delete r.p; }
+    /* nothing here now (data lost or unreadable): the copy's settings come back too */
+    const empty = !S.cars.length;
+    S = sanitizeState({ ...S, cars, settings: empty ? x.settings : S.settings });
+    save(); if (empty) applyTheme(); rolledFor = null; render();
+    toast(`أُعيد ${nf(added)} تسجيل`);
+    openSnapshots();
+  });
 }
 
 /* ---------- photo viewer (above the entry form) ---------- */
@@ -2166,6 +2381,33 @@ async function importBuffer(buf, fname) {
     };
   });
 }
+/* adds to `base` what `incoming` has and base does not: cars, sections, entries (by their ids), card
+   items, and the newer odometer reading. Nothing in base is removed or changed. → { cars, added } */
+function mergeCars(base, incoming) {
+  const cars = clone(base);
+  let added = 0;
+  for (const ic of incoming) {
+    const bc = cars.find(c => c.id === ic.id);
+    if (!bc) { if (cars.length < LIMITS.cars) { cars.push(clone(ic)); added += countRows([ic]); } continue; }
+    for (const f of ic.cardFields) if (!bc.cardFields.some(x => x.id === f.id) && bc.cardFields.length < LIMITS.cardFields) bc.cardFields.push(clone(f));
+    if (ic.odoNow && (!bc.odoNow || toNum(ic.odoNow.value) > toNum(bc.odoNow.value))) bc.odoNow = clone(ic.odoNow);
+    for (const is of ic.sections) {
+      const bs = bc.sections.find(x => x.id === is.id);
+      if (!bs) { if (bc.sections.length < LIMITS.sections) { bc.sections.push(clone(is)); added += is.rows.length; } continue; }
+      const have = new Set(bs.rows.map(r => r.id));
+      for (const r of is.rows) {
+        if (have.has(r.id) || bs.rows.length >= LIMITS.rows) continue;
+        /* an item the section no longer has comes back only if the returning entry has something in it */
+        for (const col of is.columns) if (!bs.columns.some(x => x.id === col.id) && filled(r.v[col.id]) && bs.columns.length < LIMITS.columns) bs.columns.push(clone(col));
+        bs.rows.push(clone(r)); added++;
+      }
+    }
+  }
+  return { cars, added };
+}
+const rowKeys = cars => { const k = new Set(); for (const c of cars) for (const s of c.sections) for (const r of s.rows) k.add(`${c.id}/${s.id}/${r.id}`); return k; };
+const missingRows = (cars, have) => { let n = 0; for (const c of cars) for (const s of c.sections) for (const r of s.rows) if (!have.has(`${c.id}/${s.id}/${r.id}`)) n++; return n; };
+
 function askRestore(raw, photos = new Map()) {
   const cars = sanitizeCars(raw.cars);
   const settings = sanitizeSettings(raw.settings);
@@ -2174,27 +2416,28 @@ function askRestore(raw, photos = new Map()) {
   if (!cars.length) throw new ImportError('bad-backup');
   if (n > LIMITS.totalRows) throw new ImportError('too-many');
   const inFile = [...usedPhotoIds(cars)].filter(id => photos.has(id)).length;
+  const merge = mergeCars(S.cars, cars);
   openSheet('استرجاع نسخة احتياطية', `<p style="margin:0 0 16px">${when ? `النسخة بتاريخ ${dateHTML(when)} ` : 'النسخة '}وفيها ${cars.length} ${cars.length === 1 ? 'سيارة' : 'سيارات'} و${n} تسجيل${inFile ? `، وصور الفواتير: ${nf(inFile)}` : ''}.</p>
     ${photos.skipped ? `<p class="hint-p" style="margin-top:-8px">في الملف صور أكثر مما يتسع له التطبيق (${nf(LIMITS.photos)})، فستُسترجع التسجيلات كلها و${nf(LIMITS.photos)} صورة فقط.</p>` : ''}
     <button class="btn amber wide" id="rMerge">دمج مع بياناتي الحالية</button>
-    <p class="hint" style="font-size:13px;color:var(--muted);margin:6px 2px 14px">السيارة الموجودة في النسختين تُستبدل بنسخة الملف، وتبقى السيارات الأخرى.</p>
+    <p class="hint" style="font-size:13px;color:var(--muted);margin:6px 2px 14px">${S.cars.length ? (merge.added ? `يُضيف ${nf(merge.added)} تسجيل ليس عندك` : 'كل تسجيلات النسخة موجودة عندك') + '، ولا يحذف ولا يغيّر شيئاً من بياناتك الحالية.' : 'لا توجد بيانات حالية، فتُضاف النسخة كلها.'}</p>
     <button class="btn danger wide" id="rReplace">استبدال كل بياناتي بالنسخة</button>`, b => {
     b.querySelector('#rMerge').onclick = () => {
-      const merged = S.cars.slice();
-      for (const c of cars) { const i = merged.findIndex(x => x.id === c.id); if (i >= 0) merged[i] = c; else merged.push(c); }
-      if (countRows(merged) > LIMITS.totalRows || merged.length > LIMITS.cars) { showImportError(new ImportError('too-many')); return; }
-      finishRestore(merged, settings, photos, cars);
+      if (countRows(merge.cars) > LIMITS.totalRows) { showImportError(new ImportError('too-many')); return; }
+      finishRestore(merge.cars, S.settings, photos, cars, merge.added);
     };
-    b.querySelector('#rReplace').onclick = () => confirmBox('ستُحذف كل البيانات الحالية وتحل محلها النسخة. متابعة؟', 'استبدال', () => finishRestore(cars, settings, photos, cars));
+    b.querySelector('#rReplace').onclick = () => confirmBox('ستُحذف كل البيانات الحالية وتحل محلها النسخة (ويحتفظ التطبيق بنسخة تلقائية مما عندك الآن). متابعة؟', 'استبدال', () => finishRestore(cars, settings, photos, cars));
   });
 }
 let restoring = false;
-async function finishRestore(cars, settings, photos = new Map(), restored = cars) {
+/* `added` is given for a merge (how many entries came in); without it the data is replaced */
+async function finishRestore(cars, settings, photos = new Map(), restored = cars, added) {
   if (restoring) return;
   restoring = true;
   openSheet('استرجاع نسخة احتياطية', `<p style="margin:0" id="rsProg" role="status">جارٍ الاسترجاع…</p>`);
   let failed = 0;
   try {
+    await snapshot('restore');
     await photoTask(async () => {
       /* the photos the restored entries use, then references to photos that exist nowhere are dropped */
       const need = usedPhotoIds(restored);
@@ -2204,12 +2447,13 @@ async function finishRestore(cars, settings, photos = new Map(), restored = cars
         const prog = $('#rsProg'); if (prog) prog.textContent = `جارٍ حفظ صور الفواتير… ${nf(i + 1)} من ${nf(todo.length)}`;
         try { await Photos.put(new Blob([photos.get(todo[i])], { type: 'image/jpeg' }), todo[i]); have.add(todo[i]); } catch (e) { console.warn('photo restore', e); failed++; }
       }
-      for (const c of restored) for (const s of c.sections) for (const r of s.rows) if (r.p) { r.p = r.p.filter(id => have.has(id)); if (!r.p.length) delete r.p; }
+      for (const c of cars) for (const s of c.sections) for (const r of s.rows) if (r.p) { r.p = r.p.filter(id => have.has(id)); if (!r.p.length) delete r.p; }
       S = sanitizeState({ ...S, cars, settings });
       save();
     });
     applyTheme(); closeSheet(); rolledFor = null; go('home');
-    toast(failed ? `استُرجعت النسخة، وتعذّر حفظ ${nf(failed)} من الصور (مساحة التخزين؟)` : 'استُرجعت النسخة');
+    const done = added == null ? 'استُرجعت النسخة' : added ? `أُضيف ${nf(added)} تسجيل من النسخة، ولم يُحذف شيء` : 'لا جديد في النسخة: كل تسجيلاتها موجودة عندك';
+    toast(failed ? `${done}، وتعذّر حفظ ${nf(failed)} من الصور (مساحة التخزين؟)` : done);
   } catch (e) { console.error(e); showImportError(new ImportError('other', (e && e.message) || '')); }
   finally { restoring = false; }
 }
@@ -2325,12 +2569,24 @@ $('#sheetClose').onclick = closeSheet;
   let raw = loadLocal();
   if (isNative) { const n = await loadNative(); if (n && (!raw || finite(n.rev) > finite(raw && raw.rev))) raw = n; }
   let loaded = true;
-  try { S = sanitizeState(raw); } catch (e) { console.error('state could not be read', e); S = blankState(); loaded = false; }
+  try { S = sanitizeState(raw); } catch (e) { console.error('state could not be read', e); S = blankState(); loaded = false; try { unreadable = unreadable || JSON.stringify(raw); } catch (x) { /* nothing to keep */ } }
+  if (unreadable && !(S.cars.length && loaded && raw)) await snapshot('unreadable', unreadable);
   applyTheme();
   try { render(); } catch (e) { console.error(e); S = sanitizeState(S); render(); }
   if (isNative) initNative();
-  /* photos no entry uses any more are removed once a day — never when the data could not be read */
-  if (loaded && raw) setTimeout(gcPhotos, 4000);
+  /* a copy of the data as found, once a day; then photos no entry (and no copy) uses any more are removed
+     once a day — never when the data could not be read */
+  if (loaded && raw) setTimeout(() => { dailySnapshot().finally(() => setTimeout(gcPhotos, 1500)); }, 1500);
+  /* the web app open in two windows: each one takes the other's changes instead of overwriting them */
+  if (!isNative) window.addEventListener('storage', e => {
+    if (e.key !== KEY || !e.newValue) return;
+    let next; try { next = JSON.parse(e.newValue); } catch (x) { return; }
+    if (!(finite(next && next.rev) > finite(S.rev))) return;
+    try { S = sanitizeState(next); } catch (x) { return; }
+    /* an open editor still holds the old data; the entry form finds its car and section again by their ids */
+    if (sheetOpen() && !$('#eSave')) { closeSheet(); toast('تغيّرت البيانات في نافذة أخرى، فأُغلقت هذه الصفحة'); }
+    applyTheme(); rolledFor = null; render();
+  });
   if (!isNative && 'serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('sw.js').catch(() => {});
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 })();

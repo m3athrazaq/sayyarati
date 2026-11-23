@@ -4,6 +4,8 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="file" path="photos/" />
+        <!-- the automatic copies of the data (daily and before deletions): they can be large, so they stay out of it -->
+        <exclude domain="file" path="snapshots/" />
         <!-- the full-size picture a camera app wrote for "Take a photo" (deleted a minute later anyway) -->
         <exclude domain="external" path="Pictures/" />
     </cloud-backup>

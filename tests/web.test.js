@@ -2,7 +2,7 @@
    Run: python3 -m http.server 8765 (in the repo) and `node tests/web.test.js` (needs playwright).
    Checks the normal import/export/restore flows and that crafted or broken files cannot run code,
    corrupt the data or lock the app. */
-const { chromium } = require('playwright');
+const { chromium, devices } = require('playwright');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -333,6 +333,144 @@ const ok = (cond, msg) => results.push((cond ? 'PASS ' : 'FAIL ') + msg);
     await fp.waitForTimeout(1500);
     const fr = fp.frames().find(f => f.url().includes('index.html'));
     ok(!fr || await fr.evaluate(() => !document.querySelector('#nav')).catch(() => true), 'refuses to run inside a frame');
+
+    /* 9b. records never go missing: one consistent order, suggestions that leave the keyboard alone,
+       searches that do not stay on, a merge that keeps everything, automatic copies to get back what was
+       deleted (a fresh browser profile with known data) */
+    const ctx3 = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true, locale: 'ar' });
+    const r = await ctx3.newPage();
+    r.on('pageerror', e => errors.push('page3: ' + e.message));
+    r.on('console', m => { const t = m.text(); if (/Content Security Policy|Refused to/.test(t)) csp.push(t); else if (m.type() === 'error') errors.push(t); });
+    await r.goto(BASE + 'index.html'); await r.waitForTimeout(500);
+    await r.evaluate(() => {
+      const iso = n => addDaysISO(todayISO(), n);
+      localStorage.setItem('sayyarati.state.v1', JSON.stringify({ v: 1, rev: 5, activeCar: 'c1', cars: [{ id: 'c1', name: 'F150', cardFields: [], sections: [
+        { id: 'oil', name: 'الزيوت', reminderKm: 7500, columns: [{ id: 'desc', label: 'بيان', type: 'text' }, { id: 'odo', label: 'العداد', type: 'odometer' }, { id: 'date', label: 'التاريخ', type: 'date' }],
+          rows: [{ id: 'o1', t: 1, v: { desc: 'تبديل زيت', odo: 90000, date: iso(-200) } }, { id: 'o2', t: 2, v: { desc: 'تبديل زيت وفلتر', odo: 97500, date: iso(-60) } }] },
+        { id: 'maint', name: 'الصيانة', columns: [{ id: 'desc', label: 'بيان', type: 'text' }, { id: 'odo', label: 'العداد', type: 'odometer' }, { id: 'date', label: 'التاريخ', type: 'date' }, { id: 'dist', label: 'المسافة المقطوعة', type: 'number' }],
+          rows: [{ id: 'A', t: 10, v: { desc: 'فحص الفرامل', odo: 100, date: '2026-01-01', dist: 5 } }, { id: 'B', t: 11, v: { desc: 'تبديل البطارية', odo: '', date: '2026-02-01' } }, { id: 'C', t: 12, v: { desc: 'إطارات أمامية', odo: 50, date: '2026-03-01' } }] }] }] }));
+    });
+    await r.reload(); await r.waitForTimeout(3200);
+
+    /* one order: by reading, and an entry without one right after the last reading of its date (the old rule went round in circles here) */
+    const order = await r.evaluate(() => {
+      const m = S.cars[0].sections[1];
+      const base = chrono(m).map(x => x.id).join();
+      /* any order of the stored rows gives the same list */
+      const rows = Array.from({ length: 150 }, (_, i) => ({ id: 'x' + i, t: 1000 + i, v: { desc: 'r' + i, odo: i % 3 ? Math.round(Math.random() * 9000) : '', date: i % 5 ? `2026-0${1 + (i % 9)}-1${i % 9}` : '' } }));
+      const sec = sanitizeSection({ id: 's', name: 's', columns: m.columns, rows }, new Set());
+      const a = chrono(sec).map(x => x.id).join();
+      sec.rows.reverse(); const b = chrono(sec).map(x => x.id).join();
+      sec.rows.sort(() => Math.random() - 0.5); const c = chrono(sec).map(x => x.id).join();
+      return { base, same: a === b && b === c, n: a.split(',').length };
+    });
+    ok(order.base === 'C,A,B' && order.same && order.n === 150, 'records in one consistent order (' + order.base + ')');
+
+    /* suggestions: earlier values as buttons under the item, no list from the phone over the keyboard */
+    await r.click('#fab'); await r.waitForTimeout(400);
+    await r.click('#sheetBody [data-sec-i="1"]'); await r.waitForTimeout(300);
+    const desc = '#sheetBody input[data-ci="0"]';
+    await r.focus(desc); await r.waitForTimeout(200);
+    const sg1 = await r.$$eval('#sheetBody .sugg:not(.hidden) .sg', b => b.map(x => x.textContent));
+    await r.fill(desc, 'اطارات'); await r.waitForTimeout(150);
+    const sg2 = await r.$$eval('#sheetBody .sugg:not(.hidden) .sg', b => b.map(x => x.textContent));
+    await r.fill(desc, 'فحص'); await r.waitForTimeout(150);
+    await r.click('#sheetBody .sugg .sg'); await r.waitForTimeout(150);
+    const picked = await r.evaluate(sel => ({ v: document.querySelector(sel).value, focus: document.activeElement === document.querySelector(sel), shown: !!document.querySelector('#sheetBody .sugg:not(.hidden)'), dl: document.querySelectorAll('datalist').length }), desc);
+    ok(sg1.join('|') === 'تبديل البطارية|فحص الفرامل|إطارات أمامية' && sg2.join() === 'إطارات أمامية', 'suggestions under the item, newest first, matched without hamza (' + sg1.join('|') + ')');
+    ok(picked.v === 'فحص الفرامل' && picked.focus && !picked.shown && picked.dl === 0, 'a tapped suggestion fills the item, the keyboard stays, no phone list');
+    /* the same with a finger on a phone screen */
+    const ctxT = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar' });
+    const tp = await ctxT.newPage();
+    tp.on('pageerror', e => errors.push('touch: ' + e.message));
+    await tp.goto(BASE + 'index.html'); await tp.waitForTimeout(300);
+    await tp.evaluate(st => localStorage.setItem('sayyarati.state.v1', st), await r.evaluate(() => JSON.stringify(S)));
+    await tp.reload(); await tp.waitForTimeout(1200);
+    await tp.tap('#fab'); await tp.waitForTimeout(400);
+    await tp.tap('#sheetBody [data-sec-i="1"]'); await tp.waitForTimeout(300);
+    await tp.tap(desc); await tp.waitForTimeout(400);
+    await tp.tap('#sheetBody .sugg .sg >> nth=1'); await tp.waitForTimeout(300);
+    const touched = await tp.evaluate(sel => ({ v: document.querySelector(sel).value, focus: document.activeElement === document.querySelector(sel) }), desc);
+    ok(touched.v === 'فحص الفرامل' && touched.focus, 'on a touch screen a tapped suggestion fills the item and keeps the keyboard');
+    await ctxT.close();
+    await r.click('#eSave'); await r.waitForTimeout(500);
+    await r.click('#nav [data-v=logs]'); await r.waitForTimeout(300);
+    const top = await r.$eval('.log .entry', e => e.textContent);
+    ok(top.includes('فحص الفرامل') && top.includes(await r.evaluate(() => fmtDate(todayISO()))), 'a new entry without a reading is at the top of its section');
+
+    /* a search stays with its page: back on the records page everything shows again */
+    await r.evaluate(() => { query = 'بطارية'; querySec = S.activeCar + '/' + activeSec; renderLogs(); });
+    const filtered = await r.$$eval('.log .entry', e => e.length);
+    const note = await r.textContent('.filter-note').catch(() => '');
+    await r.click('#nav [data-v=home]'); await r.waitForTimeout(200); await r.click('#nav [data-v=logs]'); await r.waitForTimeout(200);
+    ok(filtered === 1 && note.includes('1 من 4') && (await r.$$eval('.log .entry', e => e.length)) === 4, 'a search shows how many it hides and is not kept when leaving the page');
+
+    /* «دمج» never removes anything: entries added after the backup stay, deleted ones come back, settings stay */
+    const mergeText = await r.evaluate(async () => {
+      const wb = await buildWorkbook(S.cars, false);
+      const buf = await wb.xlsx.writeBuffer();
+      const m = S.cars[0].sections[1];
+      m.rows = m.rows.filter(x => x.id !== 'C');
+      m.rows.push({ id: 'NEWLOCAL', t: Date.now(), v: { desc: 'بعد النسخة', odo: '', date: todayISO() } });
+      S.settings.currency = 'ر.س'; save();
+      await importBuffer(buf, 'backup.xlsx');
+      return document.querySelector('#rMerge') ? document.querySelector('#sheetBody').textContent : 'no restore sheet';
+    });
+    await r.click('#rMerge'); await r.waitForTimeout(1500);
+    const merged = await r.evaluate(() => { const m = S.cars[0].sections[1]; return { ids: m.rows.map(x => x.id), cars: S.cars.length, cur: S.settings.currency }; });
+    ok(mergeText.includes('يُضيف 1 تسجيل') && merged.ids.includes('C') && merged.ids.includes('NEWLOCAL') && merged.ids.length === 5 && merged.cars === 1 && merged.cur === 'ر.س',
+      'merging a backup keeps current entries and settings, and brings back what was missing (' + merged.ids.join() + ')');
+
+    /* automatic copies: one a day, one before each deletion; «استرجاع الناقص» brings a deleted entry back */
+    await r.click('#nav [data-v=logs]'); await r.waitForTimeout(200);
+    await r.click('.log .entry >> text=تبديل البطارية'); await r.waitForTimeout(300);
+    await r.click('#eDel'); await r.waitForTimeout(200); await r.click('#cYes'); await r.waitForTimeout(800);
+    const kinds = await r.evaluate(async () => (await Snapshots.ids()).map(x => x.split('-').pop()).sort().join());
+    ok(/day/.test(kinds) && /delrow/.test(kinds) && /restore/.test(kinds) && !(await r.evaluate(() => S.cars[0].sections[1].rows.some(x => x.id === 'B'))), 'automatic copies kept: daily, before a restore, before a deletion (' + kinds + ')');
+    await r.click('#nav [data-v=settings]'); await r.waitForTimeout(200);
+    await r.click('#sSnap'); await r.waitForTimeout(1200);
+    const snapText = await r.textContent('#snList');
+    await r.click('#snList [data-sn]'); await r.waitForTimeout(1500);
+    ok(snapText.includes('فيها 1 تسجيل ليس في بياناتك الآن') && await r.evaluate(() => S.cars[0].sections[1].rows.some(x => x.id === 'B') && S.cars[0].sections[1].rows.length === 5), 'a deleted entry found in an automatic copy and brought back');
+
+    /* a changed item: what turning it into «المسافة» would remove is counted before saving */
+    const distLost = await r.evaluate(() => { const m = S.cars[0].sections[1]; return planSection(m, m.columns.map(c => (c.id === 'dist' ? { ...c, type: 'distance' } : c)), {}).lost; });
+    ok(distLost === 1, 'values lost by turning an item into a computed distance are counted (' + distLost + ')');
+
+    /* the web app open twice: each window takes the other's changes instead of overwriting them */
+    const r2 = await ctx3.newPage();
+    await r2.goto(BASE + 'index.html'); await r2.waitForTimeout(800);
+    await r.evaluate(() => { S.cars[0].sections[1].rows.push({ id: 'TAB1', t: Date.now(), v: { desc: 'من النافذة الأولى', odo: '', date: todayISO() } }); save(); });
+    await r2.waitForTimeout(400);
+    await r2.evaluate(() => { S.cars[0].odoNow = { value: 123456, date: todayISO() }; save(); });
+    await r.waitForTimeout(400);
+    const tabs = await r.evaluate(() => { const st = JSON.parse(localStorage.getItem('sayyarati.state.v1')); return { row: st.cars[0].sections[1].rows.some(x => x.id === 'TAB1'), odo: st.cars[0].odoNow && st.cars[0].odoNow.value, here: S.cars[0].odoNow && S.cars[0].odoNow.value }; });
+    ok(tabs.row && tabs.odo === 123456 && tabs.here === 123456, 'two open windows keep each other\'s changes');
+    await r2.close();
+
+    /* photos are kept while an automatic copy still uses them */
+    const keptForCopy = await r.evaluate(async () => {
+      const cv = document.createElement('canvas'); cv.width = 20; cv.height = 20; cv.getContext('2d').fillRect(0, 0, 10, 10);
+      await Photos.put(await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.8)), 'copyphoto');
+      const db = await new Promise(res => { const o = indexedDB.open('sayyarati-photos', 1); o.onsuccess = () => res(o.result); });
+      await new Promise(res => { const t = db.transaction('photos', 'readwrite'); const st = t.objectStore('photos'); st.get('copyphoto').onsuccess = e => { const v = e.target.result; v.t = Date.now() - 3 * 864e5; st.put(v); }; t.oncomplete = res; });
+      await Snapshots.put('20260101-090000-delrow', JSON.stringify({ cars: [{ id: 'z', name: 'z', sections: [{ id: 's', rows: [{ id: 'r', v: {}, p: ['copyphoto'] }] }] }] }));
+      localStorage.removeItem('sayyarati.photoGC');
+      await gcPhotos();
+      return !!(await Photos.blob('copyphoto'));
+    });
+    ok(keptForCopy, 'cleanup keeps photos an automatic copy still uses');
+
+    /* stored data that cannot be read is kept as a copy, and the first screen offers the copies */
+    await r.evaluate(() => localStorage.setItem('sayyarati.state.v1', '{"cars":[{"id":"broken'));
+    await r.reload(); await r.waitForTimeout(1500);
+    const broken = await r.evaluate(async () => ({ welcome: !!document.querySelector('#wSnap:not(.hidden)'), kept: (await Snapshots.ids()).some(x => x.endsWith('-unreadable')) }));
+    ok(broken.welcome && broken.kept, 'unreadable stored data kept as a copy; the first screen offers the copies');
+    await r.click('#wSnap'); await r.waitForTimeout(1200);
+    await r.click('#snList [data-sn]'); await r.waitForTimeout(1500);
+    const fromCopy = await r.evaluate(() => ({ cars: S.cars.length, rows: S.cars.length ? S.cars[0].sections[1].rows.length : 0, home: !document.querySelector('#nav').classList.contains('hidden') && !document.querySelector('#v-welcome').classList.contains('on') }));
+    ok(fromCopy.cars === 1 && fromCopy.rows >= 4 && fromCopy.home, 'the data comes back from an automatic copy (' + JSON.stringify(fromCopy) + ')');
+    await ctx3.close();
 
     /* 10. a new phone: the backup brings the invoice photos back */
     const ctx2 = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true, locale: 'ar' });
